@@ -573,7 +573,7 @@ check_http_crawler (const char *str) {
  * Otherwise the parsed browser is returned. */
 static char *
 parse_browser (char *match, char *type, int i, char ***hash) {
-  char *b = NULL, *ptr = NULL, *slh = NULL;
+  char *b = NULL, *ptr = NULL, *slh = NULL, *op = NULL;
   size_t cnt = 0, space = 0;
 
   match = char_replace (match, '+', '-');
@@ -595,8 +595,8 @@ parse_browser (char *match, char *type, int i, char ***hash) {
     return parse_opera (slh);
   }
   /* Opera has the version number at the end */
-  if (strstr (match, "Opera") && (slh = strrchr (match, '/')) && match < slh) {
-    memmove (match + 5, slh, strlen (slh) + 1);
+  if ((op = strstr (match, "Opera")) && (slh = strrchr (match, '/')) && op + 5 <= slh) {
+    memmove (op + 5, slh, strlen (slh) + 1);
   }
   /* IE Old */
   if (strstr (match, "MSIE") != NULL) {
