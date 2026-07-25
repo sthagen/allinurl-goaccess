@@ -43,7 +43,6 @@
 #define ERROR_LEN        255
 #define REF_SITE_LEN     511 /* maximum length of a referring site */
 #define CACHE_STATUS_LEN   7
-#define HASH_HEX          64
 
 #define ERR_SPEC_TOKN_NUL          0x1
 #define ERR_SPEC_TOKN_INV          0x2
@@ -90,13 +89,12 @@ typedef struct GLogItem_ {
   char *req_key;
   int status;
   char *time;
-  char *uniq_key;
+  uint64_t uniq_key;
   char *vhost;
   char *userid;
   char *cache_status;
 
   char site[REF_SITE_LEN + 1];
-  char agent_hex[HASH_HEX];
 
   uint64_t resp_size;
   uint64_t serve_time;
@@ -108,6 +106,7 @@ typedef struct GLogItem_ {
   int is_404;
   int is_static;
   int uniq_nkey;
+  int uniq_first;
   int agent_nkey;
 
   /* UMS */

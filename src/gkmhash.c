@@ -1,5 +1,5 @@
 /**
- * gkhash.c -- default hash table functions
+ * gkmhash.c -- module metric hash tables
  *    ______      ___
  *   / ____/___  /   | _____________  __________
  *  / / __/ __ \/ /| |/ ___/ ___/ _ \/ ___/ ___/
@@ -41,32 +41,54 @@
 #include "util.h"
 #include "xmalloc.h"
 
+/* Number of cache entries to allocate when a module cache first grows. Kept
+ * small since arrays double on growth and most modules hold few entries. */
+#define CACHE_INIT_CAPACITY 256
+
+/* Per-module cache backed by dense arrays indexed by cache key (ckey).
+ * ckeys are auto-incremented starting at 1, so every metric can live in a
+ * plain array instead of a hash table; only the data-hash to ckey keymap
+ * requires an actual hash table. String values are borrowed from the dated
+ * stores and are never owned by the cache. */
+struct GKCacheModule_ {
+  khash_t (ii32) * keymap;      /* data hash -> ckey */
+  char **datamap;               /* data ckey -> data string */
+  char **rootmap;               /* root ckey -> root string */
+  uint32_t *root;               /* data ckey -> root ckey */
+  uint32_t *hits;
+  uint32_t *visitors;
+  uint64_t *bw;
+  uint64_t *cumts;
+  uint64_t *maxts;
+  uint8_t *meth;
+  uint8_t *proto;
+  uint32_t size;                /* highest assigned ckey */
+  uint32_t capacity;            /* allocated entries per metric array */
+  uint32_t datamap_size;        /* number of ckeys holding a data string */
+  uint8_t has_bw;               /* bw metrics have been recorded */
+  uint8_t has_cumts;            /* cumts metrics have been recorded */
+};
+
 /* *INDENT-OFF* */
 /* Per module - These metrics are not dated */
 const GKHashMetric global_metrics[] = {
-  { .metric.storem=MTRC_UNIQUE_KEYS , MTRC_TYPE_SI32 , new_si32_ht , des_si32_free , del_si32_free , 1 , NULL , "SI32_UNIQUE_KEYS.db" } ,
-  { .metric.storem=MTRC_AGENT_KEYS  , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 0 , NULL , "II32_AGENT_KEYS.db"  } ,
-  { .metric.storem=MTRC_AGENT_VALS  , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , "IS32_AGENT_VALS.db"  } ,
-  { .metric.storem=MTRC_CNT_VALID   , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , "II32_CNT_VALID.db"   } ,
-  { .metric.storem=MTRC_CNT_BW      , MTRC_TYPE_IU64 , new_iu64_ht , des_iu64      , del_iu64      , 1 , NULL , "IU64_CNT_BW.db"      } ,
+  { .metric.storem=MTRC_UNIQUE_KEYS  , MTRC_TYPE_U6432 , new_u6432_ht , des_u6432    , del_u6432     , 0 , NULL , "U6432_UNIQUE_KEYS.db" } ,
+  { .metric.storem=MTRC_AGENT_KEYS   , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 0 , NULL , "II32_AGENT_KEYS.db"   } ,
+  { .metric.storem=MTRC_AGENT_VALS   , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , "IS32_AGENT_VALS.db"   } ,
+  { .metric.storem=MTRC_CNT_VALID    , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , "II32_CNT_VALID.db"    } ,
+  { .metric.storem=MTRC_CNT_BW       , MTRC_TYPE_IU64 , new_iu64_ht , des_iu64      , del_iu64      , 1 , NULL , "IU64_CNT_BW.db"       } ,
+  { .metric.storem=MTRC_CNT_VISITORS , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , "II32_CNT_VISITORS.db" } ,
 };
 
-/* Per module & per date */
+/* Per module & per date - The order must match the GSMetric enum */
 const GKHashMetric module_metrics[] = {
-  { .metric.storem=MTRC_KEYMAP    , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_ROOTMAP   , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_DATAMAP   , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_UNIQMAP   , MTRC_TYPE_U648 , new_u648_ht , des_u648      , del_u648      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_ROOT      , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_HITS      , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_VISITORS  , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_BW        , MTRC_TYPE_IU64 , new_iu64_ht , des_iu64      , del_iu64      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_CUMTS     , MTRC_TYPE_IU64 , new_iu64_ht , des_iu64      , del_iu64      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_MAXTS     , MTRC_TYPE_IU64 , new_iu64_ht , des_iu64      , del_iu64      , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_METHODS   , MTRC_TYPE_II08 , new_ii08_ht , des_ii08      , del_ii08      , 0 , NULL , NULL } ,
-  { .metric.storem=MTRC_PROTOCOLS , MTRC_TYPE_II08 , new_ii08_ht , des_ii08      , del_ii08      , 0 , NULL , NULL } ,
-  { .metric.storem=MTRC_AGENTS    , MTRC_TYPE_IGSL , new_igsl_ht , des_igsl_free , del_igsl_free , 1 , NULL , NULL } ,
-  { .metric.storem=MTRC_METADATA  , MTRC_TYPE_SU64 , new_su64_ht , des_su64_free , del_su64_free , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_KEYMAP   , MTRC_TYPE_II32 , new_ii32_ht , des_ii32      , del_ii32      , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_ROOTMAP  , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_DATAMAP  , MTRC_TYPE_IS32 , new_is32_ht , des_is32_free , del_is32_free , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_UNIQMAP  , MTRC_TYPE_U648 , new_u648_ht , des_u648      , del_u648      , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_METRICS  , MTRC_TYPE_IMTV , new_imtv_ht , des_imtv      , del_imtv      , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_AGENTS   , MTRC_TYPE_IGSL , new_igsl_ht , des_igsl_free , del_igsl_free , 1 , NULL , NULL } ,
+  { .metric.storem=MTRC_METADATA , MTRC_TYPE_SU64 , new_su64_ht , des_su64_free , del_su64_free , 1 , NULL , NULL } ,
 };
 const size_t module_metrics_len = ARRAY_SIZE (module_metrics);
 const size_t global_metrics_len = ARRAY_SIZE (global_metrics);
@@ -182,19 +204,6 @@ free_module_metrics (GKHashModule *mhash, GModule module, uint8_t free_data) {
   }
 }
 
-/* For each module metric, deletes all entries from the hash table */
-static void
-del_module_metrics (GKHashModule *mhash, GModule module, uint8_t free_data) {
-  int i, n = 0;
-  GKHashMetric mtrc;
-
-  n = module_metrics_len;
-  for (i = 0; i < n; i++) {
-    mtrc = mhash[module].metrics[i];
-    mtrc.del (mtrc.hash, free_data);
-  }
-}
-
 /* Destroys all hash tables and possibly all the malloc'd data within */
 static void
 free_stores (GKHashStorage *store) {
@@ -272,19 +281,27 @@ get_hash_from_store (GKHashStorage *store, int module, GSMetric metric) {
     return NULL;
 
   if (module == -1) {
-    mtrc = metric - MTRC_METADATA - 1;
-    cnt = MTRC_CNT_BW - MTRC_UNIQUE_KEYS + 1;
-    if (mtrc >= cnt) {
+    mtrc = metric - MTRC_UNIQUE_KEYS;
+    cnt = MTRC_CNT_VISITORS - MTRC_UNIQUE_KEYS + 1;
+    if (mtrc < 0 || mtrc >= cnt) {
       LOG_DEBUG (("Out of bounds when attempting to get hash %d\n", metric));
       return NULL;
     }
+    return store->ghash->metrics[mtrc].hash;
+  }
+
+  /* the packed numeric metrics all live in the merged MTRC_METRICS table */
+  if (metric >= MTRC_ROOT && metric <= MTRC_PROTOCOLS)
+    metric = MTRC_METRICS;
+
+  if (metric >= GSMTRC_TOTAL) {
+    LOG_DEBUG (("Out of bounds when attempting to get hash %d\n", metric));
+    return NULL;
   }
 
   /* ###NOTE: BE CAREFUL here, to avoid the almost unnecessary loop, we simply
    * use the index from the enum to make it O(1). The metrics array has to be
    * created in the same order as the GSMetric enum */
-  if (module < 0)
-    return store->ghash->metrics[mtrc].hash;
   return store->mhash[module].metrics[metric].hash;
 }
 
@@ -303,14 +320,198 @@ get_hash (int module, uint64_t key, GSMetric metric) {
   return get_hash_from_store (store, module, metric);
 }
 
-/* Given a module and a metric, get the cache hash table
+/* Given a module, get its cache
  *
- * On success, a pointer to that hash table is returned. */
-static void *
-get_hash_from_cache (GModule module, GSMetric metric) {
+ * On error, NULL is returned.
+ * On success, a pointer to the module cache is returned. */
+static GKCacheModule *
+get_cache_module (GModule module) {
   GKDB *db = get_db_instance (DB_INSTANCE);
 
-  return db->cache[module].metrics[metric].hash;
+  if (!db || !db->cache)
+    return NULL;
+  return &db->cache[module];
+}
+
+/* Reallocate a cache metric array to the new capacity and zero the newly
+ * allocated range.
+ *
+ * On success, the newly allocated array is returned. */
+static void *
+cache_grow_arr (void *arr, uint32_t oldcap, uint32_t newcap, size_t isize) {
+  char *tmp = xrealloc (arr, (size_t) newcap * isize);
+  memset (tmp + (size_t) oldcap * isize, 0, ((size_t) newcap - oldcap) * isize);
+  return tmp;
+}
+
+/* Ensure the cache metric arrays can hold the given ckey index. */
+static void
+cache_grow (GKCacheModule *cache, uint32_t ckey) {
+  uint32_t newcap = 0, oldcap = cache->capacity;
+
+  if (ckey < oldcap)
+    return;
+
+  newcap = oldcap == 0 ? CACHE_INIT_CAPACITY : oldcap;
+  while (newcap <= ckey)
+    newcap <<= 1;
+
+  cache->datamap = cache_grow_arr (cache->datamap, oldcap, newcap, sizeof (char *));
+  cache->rootmap = cache_grow_arr (cache->rootmap, oldcap, newcap, sizeof (char *));
+  cache->root = cache_grow_arr (cache->root, oldcap, newcap, sizeof (uint32_t));
+  cache->hits = cache_grow_arr (cache->hits, oldcap, newcap, sizeof (uint32_t));
+  cache->visitors = cache_grow_arr (cache->visitors, oldcap, newcap, sizeof (uint32_t));
+  cache->bw = cache_grow_arr (cache->bw, oldcap, newcap, sizeof (uint64_t));
+  cache->cumts = cache_grow_arr (cache->cumts, oldcap, newcap, sizeof (uint64_t));
+  cache->maxts = cache_grow_arr (cache->maxts, oldcap, newcap, sizeof (uint64_t));
+  cache->meth = cache_grow_arr (cache->meth, oldcap, newcap, sizeof (uint8_t));
+  cache->proto = cache_grow_arr (cache->proto, oldcap, newcap, sizeof (uint8_t));
+  cache->capacity = newcap;
+}
+
+/* Insert a data hash key into the cache keymap, assigning a new dense cache
+ * key if not present, and ensure the metric arrays can hold it.
+ *
+ * On error, 0 is returned.
+ * On success or if the key exists, its cache key is returned */
+static uint32_t
+cache_ins_ckey (GKCacheModule *cache, uint32_t dhash) {
+  uint32_t ckey = 0;
+
+  if (!cache || !cache->keymap)
+    return 0;
+
+  if ((ckey = ins_ii32_ai (cache->keymap, dhash)) == 0)
+    return 0;
+
+  if (ckey > cache->size) {
+    cache->size = ckey;
+    cache_grow (cache, ckey);
+  }
+
+  return ckey;
+}
+
+/* Look up the cache key assigned to the given data hash key.
+ *
+ * If not found, 0 is returned.
+ * On success, the cache key is returned */
+static uint32_t
+cache_get_ckey (GKCacheModule *cache, uint32_t dhash) {
+  if (!cache)
+    return 0;
+  return get_ii32 (cache->keymap, dhash);
+}
+
+/* Determine whether the given ckey indexes a valid cache entry.
+ *
+ * On success, non-zero is returned.
+ * On failure, 0 is returned. */
+static int
+cache_valid_ckey (const GKCacheModule *cache, uint32_t ckey) {
+  return cache && cache->capacity && ckey >= 1 && ckey <= cache->size;
+}
+
+/* Borrow a data string into the cache datamap. The value is only set once
+ * per ckey, mirroring the non-replacing insert semantics of the store. */
+static void
+cache_set_datamap (GKCacheModule *cache, uint32_t ckey, char *value) {
+  if (!cache_valid_ckey (cache, ckey) || cache->datamap[ckey])
+    return;
+
+  cache->datamap[ckey] = value;
+  cache->datamap_size++;
+}
+
+/* Borrow a root string into the cache rootmap. The value is only set once
+ * per ckey, mirroring the non-replacing insert semantics of the store. */
+static void
+cache_set_rootmap (GKCacheModule *cache, uint32_t ckey, char *value) {
+  if (!cache_valid_ckey (cache, ckey) || cache->rootmap[ckey])
+    return;
+
+  cache->rootmap[ckey] = value;
+}
+
+/* Map a data ckey to its root ckey. */
+static void
+cache_set_root (GKCacheModule *cache, uint32_t dkey, uint32_t rkey) {
+  if (!cache_valid_ckey (cache, dkey))
+    return;
+
+  cache->root[dkey] = rkey;
+}
+
+/* Clear all cache entries for a module, keeping the allocated arrays for
+ * later reuse. Borrowed strings belong to the dated stores and must not be
+ * freed here. */
+static void
+cache_reset (GKCacheModule *cache) {
+  if (!cache || !cache->capacity)
+    return;
+
+  del_ii32 (cache->keymap, 0);
+  memset (cache->datamap, 0, cache->capacity * sizeof (char *));
+  memset (cache->rootmap, 0, cache->capacity * sizeof (char *));
+  memset (cache->root, 0, cache->capacity * sizeof (uint32_t));
+  memset (cache->hits, 0, cache->capacity * sizeof (uint32_t));
+  memset (cache->visitors, 0, cache->capacity * sizeof (uint32_t));
+  memset (cache->bw, 0, cache->capacity * sizeof (uint64_t));
+  memset (cache->cumts, 0, cache->capacity * sizeof (uint64_t));
+  memset (cache->maxts, 0, cache->capacity * sizeof (uint64_t));
+  memset (cache->meth, 0, cache->capacity * sizeof (uint8_t));
+  memset (cache->proto, 0, cache->capacity * sizeof (uint8_t));
+  cache->size = 0;
+  cache->datamap_size = 0;
+  cache->has_bw = 0;
+  cache->has_cumts = 0;
+}
+
+/* Initialize the cache for all enabled modules.
+ *
+ * On success, a pointer to the newly allocated module cache array is
+ * returned. */
+static GKCacheModule *
+init_cache_modules (void) {
+  GKCacheModule *cache = xcalloc (TOTAL_MODULES, sizeof (GKCacheModule));
+  GModule module;
+  size_t idx = 0;
+
+  FOREACH_MODULE (idx, module_list) {
+    module = module_list[idx];
+    cache[module].keymap = new_ii32_ht ();
+  }
+
+  return cache;
+}
+
+/* Free the module cache and all of its metric arrays. */
+void
+free_cache (GKCacheModule *cache) {
+  GKCacheModule *c = NULL;
+  GModule module;
+  size_t idx = 0;
+
+  if (!cache)
+    return;
+
+  FOREACH_MODULE (idx, module_list) {
+    module = module_list[idx];
+    c = &cache[module];
+
+    des_ii32 (c->keymap, 0);
+    free (c->datamap);
+    free (c->rootmap);
+    free (c->root);
+    free (c->hits);
+    free (c->visitors);
+    free (c->bw);
+    free (c->cumts);
+    free (c->maxts);
+    free (c->meth);
+    free (c->proto);
+  }
+  free (cache);
 }
 
 GSLList *
@@ -339,30 +540,60 @@ ht_get_keymap_list_from_key (GModule module, uint32_t key) {
   return list;
 }
 
-/* Insert a unique visitor key string (IP/DATE/UA), mapped to an auto
- * incremented value.
+/* Increases the unique visitors counter for the given date. */
+void
+ht_inc_cnt_visitors (uint32_t date) {
+  khash_t (ii32) * hash = get_hash (-1, date, MTRC_CNT_VISITORS);
+
+  if (!hash)
+    return;
+
+  inc_ii32 (hash, 1, 1);
+}
+
+/* Insert a unique visitor fingerprint (IP/UA), mapped to an auto incremented
+ * value. On a visitor's first countable request, the value's counted bit is
+ * set and first_count is raised for the panels to act on.
  *
- * If the given key exists, its value is returned.
+ * If the given key exists, its sequence value is returned.
  * On error, 0 is returned.
- * On success the value of the key inserted is returned */
+ * On success the sequence value of the key inserted is returned */
 uint32_t
-ht_insert_unique_key (uint32_t date, const char *key) {
+ht_insert_unique_key (uint32_t date, uint64_t key, int countable, int *first_count) {
   GKDB *db = get_db_instance (DB_INSTANCE);
   khash_t (si32) * seqs = get_hdb (db, MTRC_SEQS);
-  khash_t (si32) * hash = get_hash (-1, date, MTRC_UNIQUE_KEYS);
+  khash_t (u6432) * hash = get_hash (-1, date, MTRC_UNIQUE_KEYS);
   uint32_t val = 0;
-  char *dupkey = NULL;
+  khint_t k;
+  int ret;
 
+  *first_count = 0;
   if (!hash)
     return 0;
 
-  if ((val = get_si32 (hash, key)) != 0)
-    return val;
+  k = kh_put (u6432, hash, key, &ret);
+  if (ret == -1)
+    return 0;
 
-  dupkey = xstrdup (key);
-  if ((val = ins_si32_inc (hash, dupkey, ht_ins_seq, seqs, "ht_unique_keys")) == 0)
-    free (dupkey);
-  return val;
+  if (ret == 0) {
+    val = kh_val (hash, k);
+  } else {
+    val = ht_ins_seq (seqs, "ht_unique_keys");
+    /* the counted bit occupies the top sequence bit; reject an overflowing
+     * sequence rather than corrupting counted state */
+    if (val == 0 || (val & VISITOR_COUNTED_BIT)) {
+      kh_del (u6432, hash, k);
+      return 0;
+    }
+    kh_val (hash, k) = val;
+  }
+
+  if (countable && !(val & VISITOR_COUNTED_BIT)) {
+    kh_val (hash, k) = val | VISITOR_COUNTED_BIT;
+    *first_count = 1;
+  }
+
+  return val & ~VISITOR_COUNTED_BIT;
 }
 
 /* Insert a user agent key string, mapped to an auto incremented value.
@@ -417,7 +648,7 @@ ht_insert_keymap (GModule module, uint32_t date, uint32_t key, uint32_t *ckey) {
   GKDB *db = get_db_instance (DB_INSTANCE);
   khash_t (si32) * seqs = get_hdb (db, MTRC_SEQS);
   khash_t (ii32) * hash = get_hash (module, date, MTRC_KEYMAP);
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_KEYMAP);
+  GKCacheModule *cache = get_cache_module (module);
 
   uint32_t val = 0;
   const char *modstr;
@@ -426,7 +657,7 @@ ht_insert_keymap (GModule module, uint32_t date, uint32_t key, uint32_t *ckey) {
     return 0;
 
   if ((val = get_ii32 (hash, key)) != 0) {
-    *ckey = get_ii32 (cache, key);
+    *ckey = cache_get_ckey (cache, key);
     return val;
   }
 
@@ -434,7 +665,7 @@ ht_insert_keymap (GModule module, uint32_t date, uint32_t key, uint32_t *ckey) {
   if ((val = ins_ii32_inc (hash, key, ht_ins_seq, seqs, modstr)) == 0) {
     return val;
   }
-  *ckey = ins_ii32_ai (cache, key);
+  *ckey = cache_ins_ckey (cache, key);
 
   return val;
 }
@@ -447,7 +678,7 @@ ht_insert_keymap (GModule module, uint32_t date, uint32_t key, uint32_t *ckey) {
 int
 ht_insert_rootmap (GModule module, uint32_t date, uint32_t key, const char *value, uint32_t ckey) {
   khash_t (is32) * hash = get_hash (module, date, MTRC_ROOTMAP);
-  khash_t (is32) * cache = get_hash_from_cache (module, MTRC_ROOTMAP);
+  GKCacheModule *cache = get_cache_module (module);
   char *dupval = NULL;
   int ret = 0;
 
@@ -456,7 +687,7 @@ ht_insert_rootmap (GModule module, uint32_t date, uint32_t key, const char *valu
 
   dupval = xstrdup (value);
   if ((ret = ins_is32 (hash, key, dupval)) == 0)
-    ins_is32 (cache, ckey, dupval);
+    cache_set_rootmap (cache, ckey, dupval);
   else
     free (dupval);
 
@@ -470,7 +701,7 @@ ht_insert_rootmap (GModule module, uint32_t date, uint32_t key, const char *valu
 int
 ht_insert_datamap (GModule module, uint32_t date, uint32_t key, const char *value, uint32_t ckey) {
   khash_t (is32) * hash = get_hash (module, date, MTRC_DATAMAP);
-  khash_t (is32) * cache = get_hash_from_cache (module, MTRC_DATAMAP);
+  GKCacheModule *cache = get_cache_module (module);
   char *dupval = NULL;
   int ret = 0;
 
@@ -479,18 +710,18 @@ ht_insert_datamap (GModule module, uint32_t date, uint32_t key, const char *valu
 
   dupval = xstrdup (value);
   if ((ret = ins_is32 (hash, key, dupval)) == 0)
-    ins_is32 (cache, ckey, dupval);
+    cache_set_datamap (cache, ckey, dupval);
   else
     free (dupval);
 
   return ret;
 }
 
-/* Insert a uniqmap string key.
+/* Insert a uniqmap uint64_t key into the set.
  *
  * If the given key exists, 0 is returned.
  * On error, 0 is returned.
- * On success the value of the key inserted is returned */
+ * On success 1 is returned */
 int
 ht_insert_uniqmap (GModule module, uint32_t date, uint32_t key, uint32_t value) {
   khash_t (u648) * hash = get_hash (module, date, MTRC_UNIQMAP);
@@ -500,7 +731,8 @@ ht_insert_uniqmap (GModule module, uint32_t date, uint32_t key, uint32_t value) 
     return 0;
 
   k = u64encode (key, value);
-  return ins_u648 (hash, k, 1) == 0 ? 1 : 0;
+
+  return ins_u648 (hash, k) == 0 ? 1 : 0;
 }
 
 /* Insert a data uint32_t key mapped to the corresponding uint32_t root key.
@@ -510,14 +742,19 @@ ht_insert_uniqmap (GModule module, uint32_t date, uint32_t key, uint32_t value) 
 int
 ht_insert_root (GModule module, uint32_t date, uint32_t key, uint32_t value, uint32_t dkey,
                 uint32_t rkey) {
-  khash_t (ii32) * hash = get_hash (module, date, MTRC_ROOT);
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_ROOT);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return -1;
 
-  ins_ii32 (cache, dkey, rkey);
-  return ins_ii32 (hash, key, value);
+  cache_set_root (cache, dkey, rkey);
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  mv->root = value;
+
+  return 0;
 }
 
 /* Increases hits counter from a uint32_t key.
@@ -526,14 +763,18 @@ ht_insert_root (GModule module, uint32_t date, uint32_t key, uint32_t value, uin
  * On success the inserted value is returned */
 uint32_t
 ht_insert_hits (GModule module, uint32_t date, uint32_t key, uint32_t inc, uint32_t ckey) {
-  khash_t (ii32) * hash = get_hash (module, date, MTRC_HITS);
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_HITS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return 0;
 
-  inc_ii32 (cache, ckey, inc);
-  return inc_ii32 (hash, key, inc);
+  if (cache_valid_ckey (cache, ckey))
+    __atomic_add_fetch (&cache->hits[ckey], inc, __ATOMIC_SEQ_CST);
+  if (!(mv = ins_imtv (hash, key)))
+    return 0;
+  return __atomic_add_fetch (&mv->hits, inc, __ATOMIC_SEQ_CST);
 }
 
 /* Increases visitors counter from a uint32_t key.
@@ -542,14 +783,18 @@ ht_insert_hits (GModule module, uint32_t date, uint32_t key, uint32_t inc, uint3
  * On success the inserted value is returned */
 uint32_t
 ht_insert_visitor (GModule module, uint32_t date, uint32_t key, uint32_t inc, uint32_t ckey) {
-  khash_t (ii32) * hash = get_hash (module, date, MTRC_VISITORS);
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_VISITORS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return 0;
 
-  inc_ii32 (cache, ckey, inc);
-  return inc_ii32 (hash, key, inc);
+  if (cache_valid_ckey (cache, ckey))
+    __atomic_add_fetch (&cache->visitors[ckey], inc, __ATOMIC_SEQ_CST);
+  if (!(mv = ins_imtv (hash, key)))
+    return 0;
+  return __atomic_add_fetch (&mv->visitors, inc, __ATOMIC_SEQ_CST);
 }
 
 /* Increases bandwidth counter from a uint32_t key.
@@ -558,14 +803,23 @@ ht_insert_visitor (GModule module, uint32_t date, uint32_t key, uint32_t inc, ui
  * On success 0 is returned */
 int
 ht_insert_bw (GModule module, uint32_t date, uint32_t key, uint64_t inc, uint32_t ckey) {
-  khash_t (iu64) * hash = get_hash (module, date, MTRC_BW);
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_BW);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return -1;
 
-  inc_iu64 (cache, ckey, inc);
-  return inc_iu64 (hash, key, inc);
+  if (cache_valid_ckey (cache, ckey)) {
+    cache->bw[ckey] += inc;
+    cache->has_bw = 1;
+  }
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  mv->bw += inc;
+  mv->touched |= METRIC_TOUCHED_BW;
+
+  return 0;
 }
 
 /* Increases cumulative time served counter from a uint32_t key.
@@ -574,14 +828,23 @@ ht_insert_bw (GModule module, uint32_t date, uint32_t key, uint64_t inc, uint32_
  * On success 0 is returned */
 int
 ht_insert_cumts (GModule module, uint32_t date, uint32_t key, uint64_t inc, uint32_t ckey) {
-  khash_t (iu64) * hash = get_hash (module, date, MTRC_CUMTS);
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_CUMTS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return -1;
 
-  inc_iu64 (cache, ckey, inc);
-  return inc_iu64 (hash, key, inc);
+  if (cache_valid_ckey (cache, ckey)) {
+    cache->cumts[ckey] += inc;
+    cache->has_cumts = 1;
+  }
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  mv->cumts += inc;
+  mv->touched |= METRIC_TOUCHED_CUMTS;
+
+  return 0;
 }
 
 /* Insert the maximum time served counter from a uint32_t key.
@@ -591,31 +854,34 @@ ht_insert_cumts (GModule module, uint32_t date, uint32_t key, uint64_t inc, uint
  * On success 0 is returned */
 int
 ht_insert_maxts (GModule module, uint32_t date, uint32_t key, uint64_t value, uint32_t ckey) {
-  khash_t (iu64) * hash = get_hash (module, date, MTRC_MAXTS);
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_MAXTS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
+  GKMetricVals *mv = NULL;
 
   if (!hash)
     return -1;
 
-  if (get_iu64 (cache, ckey) < value)
-    ins_iu64 (cache, ckey, value);
-  if (get_iu64 (hash, key) < value)
-    ins_iu64 (hash, key, value);
+  if (cache_valid_ckey (cache, ckey) && cache->maxts[ckey] < value)
+    cache->maxts[ckey] = value;
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  if (mv->maxts < value)
+    mv->maxts = value;
 
   return 0;
 }
 
 /* Insert a method given an uint32_t key and string value.
  *
- * On error, or if key exists, -1 is returned.
+ * On error, -1 is returned.
  * On success 0 is returned */
 int
 ht_insert_method (GModule module, uint32_t date, uint32_t key, const char *value, uint32_t ckey) {
   GKDB *db = get_db_instance (DB_INSTANCE);
-  khash_t (ii08) * hash = get_hash (module, date, MTRC_METHODS);
-  khash_t (ii08) * cache = get_hash_from_cache (module, MTRC_METHODS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
   khash_t (si08) * mtpr = get_hdb (db, MTRC_METH_PROTO);
-  int ret = 0;
+  GKMetricVals *mv = NULL;
   uint8_t val = 0;
 
   if (!hash)
@@ -624,23 +890,26 @@ ht_insert_method (GModule module, uint32_t date, uint32_t key, const char *value
   if (!(val = get_si08 (mtpr, value)))
     return -1;
 
-  if ((ret = ins_ii08 (hash, key, val)) == 0)
-    ins_ii08 (cache, ckey, val);
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  mv->meth = val;
+  if (cache_valid_ckey (cache, ckey))
+    cache->meth[ckey] = val;
 
-  return ret;
+  return 0;
 }
 
 /* Insert a protocol given an uint32_t key and string value.
  *
- * On error, or if key exists, -1 is returned.
+ * On error, -1 is returned.
  * On success 0 is returned */
 int
 ht_insert_protocol (GModule module, uint32_t date, uint32_t key, const char *value, uint32_t ckey) {
   GKDB *db = get_db_instance (DB_INSTANCE);
-  khash_t (ii08) * hash = get_hash (module, date, MTRC_PROTOCOLS);
-  khash_t (ii08) * cache = get_hash_from_cache (module, MTRC_PROTOCOLS);
+  khash_t (imtv) * hash = get_hash (module, date, MTRC_METRICS);
+  GKCacheModule *cache = get_cache_module (module);
   khash_t (si08) * mtpr = get_hdb (db, MTRC_METH_PROTO);
-  int ret = 0;
+  GKMetricVals *mv = NULL;
   uint8_t val = 0;
 
   if (!hash)
@@ -649,10 +918,13 @@ ht_insert_protocol (GModule module, uint32_t date, uint32_t key, const char *val
   if (!(val = get_si08 (mtpr, value)))
     return -1;
 
-  if ((ret = ins_ii08 (hash, key, val)) == 0)
-    ins_ii08 (cache, ckey, val);
+  if (!(mv = ins_imtv (hash, key)))
+    return -1;
+  mv->proto = val;
+  if (cache_valid_ckey (cache, ckey))
+    cache->proto[ckey] = val;
 
-  return ret;
+  return 0;
 }
 
 /* Insert an agent for a hostname given an uint32_t key and uint32_t value.
@@ -772,26 +1044,29 @@ ht_get_size_dates (void) {
 
 /* Get the number of elements in a datamap.
  *
- * Return -1 if the operation fails, else number of elements. */
+ * Return 0 if the operation fails, else number of elements. */
 uint32_t
 ht_get_size_datamap (GModule module) {
-  khash_t (is32) * cache = get_hash_from_cache (module, MTRC_DATAMAP);
+  GKCacheModule *cache = get_cache_module (module);
 
   if (!cache)
     return 0;
 
-  return kh_size (cache);
+  return cache->datamap_size;
 }
 
-/* Get the number of elements in a uniqmap.
+/* Get the total number of unique visitors across all dates. The per-date
+ * counters are authoritative under every date specificity; the VISITORS
+ * uniqmap is membership state only and may hold conservative extra pairs
+ * after a migration.
  *
  * On error, 0 is returned.
- * On success the number of elements in MTRC_UNIQMAP is returned */
+ * On success the number of unique visitors is returned */
 uint32_t
-ht_get_size_uniqmap (GModule module) {
+ht_sum_uniq_visitors (void) {
   GKDB *db = get_db_instance (DB_INSTANCE);
   khash_t (igkh) * dates = get_hdb (db, MTRC_DATES);
-  khash_t (u648) * hash = NULL;
+  khash_t (ii32) * hash = NULL;
   uint32_t k = 0;
   uint32_t sum = 0;
 
@@ -800,8 +1075,8 @@ ht_get_size_uniqmap (GModule module) {
 
   /* *INDENT-OFF* */
   HT_SUM_VAL (dates, k, {
-    if ((hash = get_hash (module, k, MTRC_UNIQMAP)))
-    sum += kh_size (hash);
+    if ((hash = get_hash (-1, k, MTRC_CNT_VISITORS)))
+      sum += get_ii32 (hash, 1);
   });
   /* *INDENT-ON* */
 
@@ -814,12 +1089,12 @@ ht_get_size_uniqmap (GModule module) {
  * On success the string value for the given key is returned */
 char *
 ht_get_datamap (GModule module, uint32_t key) {
-  khash_t (is32) * cache = get_hash_from_cache (module, MTRC_DATAMAP);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache_valid_ckey (cache, key) || !cache->datamap[key])
     return NULL;
 
-  return get_is32 (cache, key);
+  return xstrdup (cache->datamap[key]);
 }
 
 /* Get the string root from MTRC_ROOTMAP given an uint32_t data key.
@@ -828,34 +1103,35 @@ ht_get_datamap (GModule module, uint32_t key) {
  * On success the string value for the given key is returned */
 char *
 ht_get_root (GModule module, uint32_t key) {
-  int root_key = 0;
-  khash_t (ii32) * hashroot = get_hash_from_cache (module, MTRC_ROOT);
-  khash_t (is32) * hashrootmap = get_hash_from_cache (module, MTRC_ROOTMAP);
+  GKCacheModule *cache = get_cache_module (module);
+  uint32_t root_key = 0;
 
-  if (!hashroot || !hashrootmap)
+  if (!cache_valid_ckey (cache, key))
     return NULL;
 
   /* not found */
-  if ((root_key = get_ii32 (hashroot, key)) == 0)
+  if ((root_key = cache->root[key]) == 0)
     return NULL;
 
-  return get_is32 (hashrootmap, root_key);
+  if (!cache_valid_ckey (cache, root_key) || !cache->rootmap[root_key])
+    return NULL;
+
+  return xstrdup (cache->rootmap[root_key]);
 }
 
-
-/* Get the int visitors value from MTRC_VISITORS given an int key.
+/* Get the int visitors value from MTRC_HITS given an int key.
  *
  * If key is not found, 0 is returned.
  * On error, -1 is returned.
  * On success the int value for the given key is returned */
 uint32_t
 ht_get_hits (GModule module, int key) {
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_HITS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (key < 1 || !cache_valid_ckey (cache, key))
     return 0;
 
-  return get_ii32 (cache, key);
+  return __atomic_load_n (&cache->hits[key], __ATOMIC_SEQ_CST);
 }
 
 /* Get the uint32_t visitors value from MTRC_VISITORS given an uint32_t key.
@@ -865,12 +1141,12 @@ ht_get_hits (GModule module, int key) {
  * On success the uint32_t value for the given key is returned */
 uint32_t
 ht_get_visitors (GModule module, uint32_t key) {
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_VISITORS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache_valid_ckey (cache, key))
     return 0;
 
-  return get_ii32 (cache, key);
+  return __atomic_load_n (&cache->visitors[key], __ATOMIC_SEQ_CST);
 }
 
 /* Get the uint64_t value from MTRC_BW given an uint32_t key.
@@ -879,12 +1155,12 @@ ht_get_visitors (GModule module, uint32_t key) {
  * On success the uint64_t value for the given key is returned */
 uint64_t
 ht_get_bw (GModule module, uint32_t key) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_BW);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache_valid_ckey (cache, key))
     return 0;
 
-  return get_iu64 (cache, key);
+  return cache->bw[key];
 }
 
 /* Get the uint64_t value from MTRC_CUMTS given an uint32_t key.
@@ -893,12 +1169,12 @@ ht_get_bw (GModule module, uint32_t key) {
  * On success the uint64_t value for the given key is returned */
 uint64_t
 ht_get_cumts (GModule module, uint32_t key) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_CUMTS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache_valid_ckey (cache, key))
     return 0;
 
-  return get_iu64 (cache, key);
+  return cache->cumts[key];
 }
 
 /* Get the uint64_t value from MTRC_MAXTS given an uint32_t key.
@@ -907,12 +1183,12 @@ ht_get_cumts (GModule module, uint32_t key) {
  * On success the uint64_t value for the given key is returned */
 uint64_t
 ht_get_maxts (GModule module, uint32_t key) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_MAXTS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache_valid_ckey (cache, key))
     return 0;
 
-  return get_iu64 (cache, key);
+  return cache->maxts[key];
 }
 
 uint8_t
@@ -929,20 +1205,15 @@ get_method_proto (const char *value) {
   return 0;
 }
 
-/* Get the string value from MTRC_METHODS given an uint32_t key.
+/* Look up the string for a method/protocol numeric value.
  *
  * On error, NULL is returned.
- * On success the string value for the given key is returned */
-char *
-ht_get_method (GModule module, uint32_t key) {
+ * On success the string value for the given id is returned */
+static char *
+get_meth_proto_str (uint8_t val) {
   GKDB *db = get_db_instance (DB_INSTANCE);
-  khash_t (ii08) * cache = get_hash_from_cache (module, MTRC_METHODS);
   khash_t (si08) * mtpr = get_hdb (db, MTRC_METH_PROTO);
-  uint8_t val = 0;
   khint_t k;
-
-  if (!(val = get_ii08 (cache, key)))
-    return NULL;
 
   for (k = kh_begin (mtpr); k != kh_end (mtpr); ++k) {
     if (kh_exist (mtpr, k) && kh_val (mtpr, k) == val)
@@ -951,26 +1222,32 @@ ht_get_method (GModule module, uint32_t key) {
   return NULL;
 }
 
+/* Get the string value from MTRC_METHODS given an uint32_t key.
+ *
+ * On error, NULL is returned.
+ * On success the string value for the given key is returned */
+char *
+ht_get_method (GModule module, uint32_t key) {
+  GKCacheModule *cache = get_cache_module (module);
+
+  if (!cache_valid_ckey (cache, key) || !cache->meth[key])
+    return NULL;
+
+  return get_meth_proto_str (cache->meth[key]);
+}
+
 /* Get the string value from MTRC_PROTOCOLS given an uint32_t key.
  *
  * On error, NULL is returned.
  * On success the string value for the given key is returned */
 char *
 ht_get_protocol (GModule module, uint32_t key) {
-  GKDB *db = get_db_instance (DB_INSTANCE);
-  khash_t (ii08) * cache = get_hash_from_cache (module, MTRC_PROTOCOLS);
-  khash_t (si08) * mtpr = get_hdb (db, MTRC_METH_PROTO);
-  uint8_t val = 0;
-  khint_t k;
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!(val = get_ii08 (cache, key)))
+  if (!cache_valid_ckey (cache, key) || !cache->proto[key])
     return NULL;
 
-  for (k = kh_begin (mtpr); k != kh_end (mtpr); ++k) {
-    if (kh_exist (mtpr, k) && kh_val (mtpr, k) == val)
-      return xstrdup (kh_key (mtpr, k));
-  }
-  return NULL;
+  return get_meth_proto_str (cache->proto[key]);
 }
 
 /* Get the string value from ht_agent_vals (user agent) given an uint32_t key.
@@ -1036,16 +1313,6 @@ ht_get_host_agent_list (GModule module, uint32_t key) {
   return res;
 }
 
-uint32_t
-ht_get_keymap (GModule module, const char *key) {
-  khash_t (si32) * cache = get_hash_from_cache (module, MTRC_KEYMAP);
-
-  if (!cache)
-    return 0;
-
-  return get_si32 (cache, key);
-}
-
 /* Get the meta data uint64_t from MTRC_METADATA given a string key.
  *
  * On error, or if key is not found, 0 is returned.
@@ -1068,79 +1335,154 @@ ht_get_meta_data (GModule module, const char *key) {
   return sum;
 }
 
-/* Set the maximum and minimum values found on an integer key and
- * integer value found on the MTRC_VISITORS hash structure.
+/* Set the maximum and minimum values found on a uint32_t cache metric array.
+ * Only assigned entries (non-zero values) are considered, matching the
+ * presence semantics of the former per-metric hash tables.
  *
- * If the hash structure is empty, no values are set.
+ * If no entries are present, no values are set.
+ * On success the minimum and maximum values are set. */
+static void
+cache_min_max_u32 (const GKCacheModule *cache, const uint32_t *arr, uint32_t *min, uint32_t *max) {
+  uint32_t i, curvalue = 0;
+  int j = 0;
+
+  for (i = 1; i <= cache->size; ++i) {
+    if ((curvalue = arr[i]) == 0)
+      continue;
+    if (j++ == 0)
+      *min = curvalue;
+    if (curvalue > *max)
+      *max = curvalue;
+    if (curvalue < *min)
+      *min = curvalue;
+  }
+}
+
+/* Set the maximum and minimum values found on a uint64_t cache metric array.
+ * All data entries (hits > 0) are considered, matching the presence
+ * semantics of the former bw/cumts hash tables where a zero value was still
+ * a present entry.
+ *
+ * If no entries are present, no values are set.
+ * On success the minimum and maximum values are set. */
+static void
+cache_min_max_u64_data (const GKCacheModule *cache, const uint64_t *arr, uint64_t *min,
+                        uint64_t *max) {
+  uint64_t curvalue = 0;
+  uint32_t i;
+  int j = 0;
+
+  for (i = 1; i <= cache->size; ++i) {
+    if (cache->hits[i] == 0)
+      continue;
+    curvalue = arr[i];
+    if (j++ == 0)
+      *min = curvalue;
+    if (curvalue > *max)
+      *max = curvalue;
+    if (curvalue < *min)
+      *min = curvalue;
+  }
+}
+
+/* Set the maximum and minimum values found on a uint64_t cache metric array.
+ * Only assigned entries (non-zero values) are considered, matching the
+ * presence semantics of the former maxts hash tables.
+ *
+ * If no entries are present, no values are set.
+ * On success the minimum and maximum values are set. */
+static void
+cache_min_max_u64_nonzero (const GKCacheModule *cache, const uint64_t *arr, uint64_t *min,
+                           uint64_t *max) {
+  uint64_t curvalue = 0;
+  uint32_t i;
+  int j = 0;
+
+  for (i = 1; i <= cache->size; ++i) {
+    if ((curvalue = arr[i]) == 0)
+      continue;
+    if (j++ == 0)
+      *min = curvalue;
+    if (curvalue > *max)
+      *max = curvalue;
+    if (curvalue < *min)
+      *min = curvalue;
+  }
+}
+
+/* Set the maximum and minimum values found on an integer key and
+ * integer value found on the MTRC_HITS metric.
+ *
+ * If the metric is empty, no values are set.
  * On success the minimum and maximum values are set. */
 void
 ht_get_hits_min_max (GModule module, uint32_t *min, uint32_t *max) {
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_HITS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache || !cache->capacity)
     return;
 
-  get_ii32_min_max (cache, min, max);
+  cache_min_max_u32 (cache, cache->hits, min, max);
 }
 
 /* Set the maximum and minimum values found on an integer key and
- * integer value found on the MTRC_VISITORS hash structure.
+ * integer value found on the MTRC_VISITORS metric.
  *
- * If the hash structure is empty, no values are set.
+ * If the metric is empty, no values are set.
  * On success the minimum and maximum values are set. */
 void
 ht_get_visitors_min_max (GModule module, uint32_t *min, uint32_t *max) {
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_VISITORS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache || !cache->capacity)
     return;
 
-  get_ii32_min_max (cache, min, max);
+  cache_min_max_u32 (cache, cache->visitors, min, max);
 }
 
 /* Set the maximum and minimum values found on an integer key and
- * a uint64_t value found on the MTRC_BW hash structure.
+ * a uint64_t value found on the MTRC_BW metric.
  *
- * If the hash structure is empty, no values are set.
+ * If the metric is empty, no values are set.
  * On success the minimum and maximum values are set. */
 void
 ht_get_bw_min_max (GModule module, uint64_t *min, uint64_t *max) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_BW);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache || !cache->capacity || !cache->has_bw)
     return;
 
-  get_iu64_min_max (cache, min, max);
+  cache_min_max_u64_data (cache, cache->bw, min, max);
 }
 
 /* Set the maximum and minimum values found on an integer key and
- * a uint64_t value found on the MTRC_CUMTS hash structure.
+ * a uint64_t value found on the MTRC_CUMTS metric.
  *
- * If the hash structure is empty, no values are set.
+ * If the metric is empty, no values are set.
  * On success the minimum and maximum values are set. */
 void
 ht_get_cumts_min_max (GModule module, uint64_t *min, uint64_t *max) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_CUMTS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache || !cache->capacity || !cache->has_cumts)
     return;
 
-  get_iu64_min_max (cache, min, max);
+  cache_min_max_u64_data (cache, cache->cumts, min, max);
 }
 
 /* Set the maximum and minimum values found on an integer key and
- * a uint64_t value found on the MTRC_MAXTS hash structure.
+ * a uint64_t value found on the MTRC_MAXTS metric.
  *
- * If the hash structure is empty, no values are set.
+ * If the metric is empty, no values are set.
  * On success the minimum and maximum values are set. */
 void
 ht_get_maxts_min_max (GModule module, uint64_t *min, uint64_t *max) {
-  khash_t (iu64) * cache = get_hash_from_cache (module, MTRC_MAXTS);
+  GKCacheModule *cache = get_cache_module (module);
 
-  if (!cache)
+  if (!cache || !cache->capacity)
     return;
 
-  get_iu64_min_max (cache, min, max);
+  cache_min_max_u64_nonzero (cache, cache->maxts, min, max);
 }
 
 static void
@@ -1166,7 +1508,7 @@ invalidate_date (int date) {
 
   FOREACH_MODULE (idx, module_list) {
     module = module_list[idx];
-    del_module_metrics (db->cache, module, 0);
+    cache_reset (get_cache_module (module));
   }
 
   destroy_date_stores (date);
@@ -1174,86 +1516,22 @@ invalidate_date (int date) {
   return 0;
 }
 
-static uint32_t
-ins_cache_map (GModule module, GSMetric metric, uint32_t key) {
-  khash_t (ii32) * cache = get_hash_from_cache (module, metric);
-
-  if (!cache)
-    return 0;
-  return ins_ii32_ai (cache, key);
-}
-
-static int
-ins_cache_ii08 (GKHashStorage *store, GModule module, GSMetric metric, uint32_t key, uint32_t ckey) {
-  khash_t (ii08) * hash = get_hash_from_store (store, module, metric);
-  khash_t (ii08) * cache = get_hash_from_cache (module, metric);
-  khint_t k;
-
-  if ((k = kh_get (ii08, hash, key)) == kh_end (hash))
-    return -1;
-  return ins_ii08 (cache, ckey, kh_val (hash, k));
-}
-
-static int
-ins_cache_is32 (GKHashStorage *store, GModule module, GSMetric metric, uint32_t key, uint32_t ckey) {
-  khash_t (is32) * hash = get_hash_from_store (store, module, metric);
-  khash_t (is32) * cache = get_hash_from_cache (module, metric);
-  khint_t k;
-
-  if ((k = kh_get (is32, hash, key)) == kh_end (hash))
-    return -1;
-  return ins_is32 (cache, ckey, kh_val (hash, k));
-}
-
-static int
-inc_cache_ii32 (GKHashStorage *store, GModule module, GSMetric metric, uint32_t key, uint32_t ckey) {
-  khash_t (ii32) * hash = get_hash_from_store (store, module, metric);
-  khash_t (ii32) * cache = get_hash_from_cache (module, metric);
-  khint_t k;
-
-  if ((k = kh_get (ii32, hash, key)) == kh_end (hash))
-    return -1;
-  return inc_ii32 (cache, ckey, kh_val (hash, k));
-}
-
-static int
-max_cache_iu64 (GKHashStorage *store, GModule module, GSMetric metric, uint32_t key, uint32_t ckey) {
-  khash_t (iu64) * hash = get_hash_from_store (store, module, metric);
-  khash_t (iu64) * cache = get_hash_from_cache (module, metric);
-  khint_t k;
-
-  if ((k = kh_get (iu64, hash, key)) == kh_end (hash))
-    return -1;
-
-  if (get_iu64 (cache, ckey) < kh_val (hash, k))
-    return ins_iu64 (cache, ckey, kh_val (hash, k));
-  return -1;
-}
-
-static int
-inc_cache_iu64 (GKHashStorage *store, GModule module, GSMetric metric, uint32_t key, uint32_t ckey) {
-  khash_t (iu64) * hash = get_hash_from_store (store, module, metric);
-  khash_t (iu64) * cache = get_hash_from_cache (module, metric);
-  khint_t k;
-
-  if ((k = kh_get (iu64, hash, key)) == kh_end (hash))
-    return -1;
-  return inc_iu64 (cache, ckey, kh_val (hash, k));
-}
-
+/* Rebuild the cache for a module from the given date store. */
 static int
 ins_raw_num_data (GModule module, uint32_t date) {
   GKDB *db = get_db_instance (DB_INSTANCE);
   khash_t (igkh) * hash = get_hdb (db, MTRC_DATES);
   GKHashStorage *store = get_store (hash, date);
+  GKCacheModule *cache = get_cache_module (module);
   khiter_t k, kr;
-  uint32_t ckey = 0, rkey = 0, nrkey = 0;
+  uint32_t ckey = 0, nrkey = 0;
   char *val = NULL;
+  GKMetricVals *mv = NULL;
 
   khash_t (ii32) * kmap = get_hash_from_store (store, module, MTRC_KEYMAP);
-  khash_t (ii32) * root = get_hash_from_store (store, module, MTRC_ROOT);
+  khash_t (imtv) * metrics = get_hash_from_store (store, module, MTRC_METRICS);
+  khash_t (is32) * dmap = get_hash_from_store (store, module, MTRC_DATAMAP);
   khash_t (is32) * rmap = get_hash_from_store (store, module, MTRC_ROOTMAP);
-  khash_t (ii32) * cache = get_hash_from_cache (module, MTRC_ROOT);
 
   if (!kmap)
     return -1;
@@ -1261,26 +1539,45 @@ ins_raw_num_data (GModule module, uint32_t date) {
   for (k = kh_begin (kmap); k != kh_end (kmap); ++k) {
     if (!kh_exist (kmap, k))
       continue;
-    if ((ckey = ins_cache_map (module, MTRC_KEYMAP, kh_key (kmap, k))) == 0)
+    if ((ckey = cache_ins_ckey (cache, kh_key (kmap, k))) == 0)
       continue;
 
-    if ((rkey = get_ii32 (root, kh_val (kmap, k)))) {
-      kr = kh_get (is32, rmap, rkey);
+    mv = get_imtv (metrics, kh_val (kmap, k));
+
+    if (mv && mv->root) {
+      kr = kh_get (is32, rmap, mv->root);
       if (kr != kh_end (rmap) && (val = kh_val (rmap, kr))) {
-        nrkey = ins_cache_map (module, MTRC_KEYMAP, djb2 ((unsigned char *) val));
-        ins_cache_is32 (store, module, MTRC_ROOTMAP, rkey, nrkey);
-        ins_ii32 (cache, ckey, nrkey);
+        nrkey = cache_ins_ckey (cache, djb2 ((unsigned char *) val));
+        cache_set_rootmap (cache, nrkey, val);
+        cache_set_root (cache, ckey, nrkey);
       }
     }
 
-    ins_cache_is32 (store, module, MTRC_DATAMAP, kh_val (kmap, k), ckey);
-    inc_cache_ii32 (store, module, MTRC_HITS, kh_val (kmap, k), ckey);
-    inc_cache_ii32 (store, module, MTRC_VISITORS, kh_val (kmap, k), ckey);
-    inc_cache_iu64 (store, module, MTRC_BW, kh_val (kmap, k), ckey);
-    inc_cache_iu64 (store, module, MTRC_CUMTS, kh_val (kmap, k), ckey);
-    max_cache_iu64 (store, module, MTRC_MAXTS, kh_val (kmap, k), ckey);
-    ins_cache_ii08 (store, module, MTRC_METHODS, kh_val (kmap, k), ckey);
-    ins_cache_ii08 (store, module, MTRC_PROTOCOLS, kh_val (kmap, k), ckey);
+    if ((kr = kh_get (is32, dmap, kh_val (kmap, k))) != kh_end (dmap))
+      cache_set_datamap (cache, ckey, kh_val (dmap, kr));
+
+    /* root-only keys hold no metrics of their own */
+    if (!mv)
+      continue;
+
+    if (mv->hits)
+      __atomic_add_fetch (&cache->hits[ckey], mv->hits, __ATOMIC_SEQ_CST);
+    if (mv->visitors)
+      __atomic_add_fetch (&cache->visitors[ckey], mv->visitors, __ATOMIC_SEQ_CST);
+    if (mv->touched & METRIC_TOUCHED_BW) {
+      cache->bw[ckey] += mv->bw;
+      cache->has_bw = 1;
+    }
+    if (mv->touched & METRIC_TOUCHED_CUMTS) {
+      cache->cumts[ckey] += mv->cumts;
+      cache->has_cumts = 1;
+    }
+    if (mv->maxts && cache->maxts[ckey] < mv->maxts)
+      cache->maxts[ckey] = mv->maxts;
+    if (mv->meth)
+      cache->meth[ckey] = mv->meth;
+    if (mv->proto)
+      cache->proto[ckey] = mv->proto;
   }
 
   return 0;
@@ -1321,7 +1618,7 @@ rebuild_rawdata_cache (void) {
 void
 init_storage (void) {
   GKDB *db = get_db_instance (DB_INSTANCE);
-  db->cache = init_gkhashmodule ();
+  db->cache = init_cache_modules ();
 
   if (conf.restore)
     restore_data ();
@@ -1344,18 +1641,6 @@ des_igkh (void *h) {
   kh_destroy (igkh, hash);
 }
 
-void
-free_cache (GKHashModule *cache) {
-  GModule module;
-  size_t idx = 0;
-
-  FOREACH_MODULE (idx, module_list) {
-    module = module_list[idx];
-    free_module_metrics (cache, module, 0);
-  }
-  free (cache);
-}
-
 /* A wrapper to initialize a raw data structure.
  *
  * On success a GRawData structure is returned. */
@@ -1372,55 +1657,57 @@ init_new_raw_data (GModule module, uint32_t ht_size) {
   return raw_data;
 }
 
+/* Store the cache hits into raw_data.
+ *
+ * On error, NULL is returned.
+ * On success the GRawData is returned */
 static GRawData *
 get_u32_raw_data (GModule module) {
-  khash_t (ii32) * hash = get_hash_from_cache (module, MTRC_HITS);
+  GKCacheModule *cache = get_cache_module (module);
   GRawData *raw_data;
-  khiter_t key;
-  uint32_t ht_size = 0;
+  uint32_t i, ht_size = 0;
 
-  if (!hash)
+  if (!cache || !cache->keymap)
     return NULL;
 
-  ht_size = kh_size (hash);
+  for (i = 1; i <= cache->size; ++i)
+    ht_size += cache->hits[i] > 0;
+
   raw_data = init_new_raw_data (module, ht_size);
   raw_data->type = U32;
 
-  for (key = kh_begin (hash); key != kh_end (hash); ++key) {
-    if (!kh_exist (hash, key))
+  for (i = 1; i <= cache->size; ++i) {
+    if (cache->hits[i] == 0)
       continue;
-    raw_data->items[raw_data->idx].nkey = kh_key (hash, key);
-    raw_data->items[raw_data->idx].hits = kh_val (hash, key);
+    raw_data->items[raw_data->idx].nkey = i;
+    raw_data->items[raw_data->idx].hits = cache->hits[i];
     raw_data->idx++;
   }
 
   return raw_data;
 }
 
-/* Store the key/value pairs from a hash table into raw_data and sorts
- * the hits (numeric) value.
+/* Store the cache data strings into raw_data.
  *
  * On error, NULL is returned.
- * On success the GRawData sorted is returned */
+ * On success the GRawData is returned */
 static GRawData *
 get_str_raw_data (GModule module) {
-  khash_t (is32) * hash = get_hash_from_cache (module, MTRC_DATAMAP);
+  GKCacheModule *cache = get_cache_module (module);
   GRawData *raw_data;
-  khiter_t key;
-  uint32_t ht_size = 0;
+  uint32_t i;
 
-  if (!hash)
+  if (!cache || !cache->keymap)
     return NULL;
 
-  ht_size = kh_size (hash);
-  raw_data = init_new_raw_data (module, ht_size);
+  raw_data = init_new_raw_data (module, cache->datamap_size);
   raw_data->type = STR;
 
-  for (key = kh_begin (hash); key != kh_end (hash); ++key) {
-    if (!kh_exist (hash, key))
+  for (i = 1; i <= cache->size; ++i) {
+    if (!cache->datamap[i])
       continue;
-    raw_data->items[raw_data->idx].nkey = kh_key (hash, key);
-    raw_data->items[raw_data->idx].data = kh_val (hash, key);
+    raw_data->items[raw_data->idx].nkey = i;
+    raw_data->items[raw_data->idx].data = cache->datamap[i];
     raw_data->idx++;
   }
 

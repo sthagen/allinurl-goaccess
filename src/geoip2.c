@@ -115,6 +115,49 @@ init_geoip (void) {
     set_geoip (conf.geoip_databases[i]);
 }
 
+/* Select the database best suited to resolve a lookup.
+ *
+ * ASN queries require an ASN database. Country, continent and city
+ * queries are all answered from a single result, so a City database is
+ * preferred whenever one is available because it is a superset that
+ * also carries country and continent data; a Country database is used
+ * only as a fallback when no City database was supplied. This prevents
+ * city lookups from silently failing when a Country database is listed
+ * ahead of a City database.
+ *
+ * If no suitable database is available, -1 is returned.
+ * On success, the matching database index is returned. */
+static int
+get_mmdb_idx (int is_asn) {
+  int idx = 0, country_idx = -1;
+
+  for (idx = 0; idx < mmdb_cnt; idx++) {
+    const char *type = mmdbs[idx].metadata.database_type;
+    int is_asn_db = strstr (type, "ASN") != NULL;
+
+    /* ASN queries must use an ASN database. */
+    if (is_asn) {
+      if (is_asn_db)
+        return idx;
+      continue;
+    }
+
+    /* Non-ASN queries never use an ASN database. */
+    if (is_asn_db)
+      continue;
+
+    /* Prefer a City database (country + continent + city superset). */
+    if (strstr (type, "-City") != NULL)
+      return idx;
+
+    /* Remember the first Country database as a fallback. */
+    if (country_idx == -1)
+      country_idx = idx;
+  }
+
+  return country_idx;
+}
+
 /* Look up an IP address that is passed in as a null-terminated string.
  *
  * On error, it aborts.
@@ -122,26 +165,19 @@ init_geoip (void) {
  * On success, MMDB_lookup_result_s struct is set and 0 is returned. */
 static int
 geoip_lookup (MMDB_lookup_result_s *res, const char *ip, int is_asn) {
-  int gai_err, mmdb_err, idx = 0;
-  MMDB_s *mmdb = NULL;
+  int gai_err = 0, mmdb_err = 0, idx = 0;
 
-  for (idx = 0; idx < mmdb_cnt; idx++) {
-    if (is_asn && (!strstr (mmdbs[idx].metadata.database_type, "ASN")))
-      continue;
-    if (!is_asn && (strstr (mmdbs[idx].metadata.database_type, "ASN")))
-      continue;
+  idx = get_mmdb_idx (is_asn);
+  if (idx < 0)
+    return 1;
 
-    mmdb = &mmdbs[idx];
-
-    *res = MMDB_lookup_string (mmdb, ip, &gai_err, &mmdb_err);
-    if (0 != gai_err)
-      return 1;
-    if (MMDB_SUCCESS != mmdb_err)
-      FATAL ("Error from libmaxminddb: %s\n", MMDB_strerror (mmdb_err));
-    if (!(*res).found_entry)
-      return 1;
-    break;
-  }
+  *res = MMDB_lookup_string (&mmdbs[idx], ip, &gai_err, &mmdb_err);
+  if (0 != gai_err)
+    return 1;
+  if (MMDB_SUCCESS != mmdb_err)
+    FATAL ("Error from libmaxminddb: %s\n", MMDB_strerror (mmdb_err));
+  if (!res->found_entry)
+    return 1;
 
   return 0;
 }
@@ -385,8 +421,9 @@ set_geolocation (char *host, char *continent, char *country, char *city, char *a
   if (!is_geoip_resource ())
     return 1;
 
-  /* set ASN data */
-  if (geoip_asn_type)
+  /* set ASN data; the ASN panel performs its own lookup, so callers that
+   * pass NULL skip the extra query per line */
+  if (geoip_asn_type && asn)
     geoip_asn (host, asn);
 
   if (!geoip_city_type && !geoip_country_type)

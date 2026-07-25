@@ -472,7 +472,7 @@ get_str_static_reqs (void) {
  * On success, the number of unique visitors as a string is returned. */
 static char *
 get_str_visitors (void) {
-  return u642str (ht_get_size_uniqmap (VISITORS), 0);
+  return u642str (ht_sum_uniq_visitors (), 0);
 }
 
 /* Convert the time taken to process the log to a string.

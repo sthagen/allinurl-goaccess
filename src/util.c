@@ -781,14 +781,41 @@ invalid_ipaddr (const char *str, int *ipvx) {
   return 1;
 }
 
-/* Encode a data key and a unique visitor's key to a new uint64_t key
+/* Encode a data key and a unique visitor's key to a new uint64_t key. The
+  * pair is ordered: x always occupies the high word, since (x,y) and (y,x)
+  * are distinct pairs.
   *
   * ###NOTE: THIS LIMITS THE MAX VALUE OF A DATA TABLE TO uint32_t
   * WILL NEED TO CHANGE THIS IF WE GO OVER uint32_t
   */
 uint64_t
 u64encode (uint32_t x, uint32_t y) {
-  return x > y ? (uint32_t) y | ((uint64_t) x << 32) : (uint32_t) x | ((uint64_t) y << 32);
+  return ((uint64_t) x << 32) | y;
+}
+
+/* FNV-1a 64-bit hashing constants */
+#define FNV64_OFFSET 0xCBF29CE484222325ULL
+#define FNV64_PRIME  0x100000001B3ULL
+
+/* Build a 64-bit fingerprint identifying a unique visitor from the host and
+ * the user agent hash. The date is not part of the fingerprint since visitor
+ * tables are already partitioned by date. Only fields recoverable from the
+ * legacy "DATE|IP|UA-hex" key strings may participate, so persisted
+ * databases can be migrated exactly.
+ *
+ * On success, the non-zero visitor fingerprint is returned. */
+uint64_t
+visitor_fingerprint (const char *host, uint32_t agent_hash) {
+  uint64_t h = FNV64_OFFSET;
+  const char *p;
+
+  for (p = host; *p; p++) {
+    h = (h ^ (uint8_t) *p) * FNV64_PRIME;
+  }
+  h = (h ^ agent_hash) * FNV64_PRIME;
+
+  /* zero is reserved to mean "no fingerprint" */
+  return h ? h : UINT64_MAX;
 }
 
 /* Decode a uint64_t number into the original two uint32_t  */

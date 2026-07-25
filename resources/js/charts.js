@@ -11,6 +11,47 @@
 
 'use strict';
 
+const MAP_FULLSCREEN_CLASS = 'map-fullscreen';
+const MAP_FULLSCREEN_BODY_CLASS = 'map-fullscreen-open';
+const MAP_FULLSCREEN_MIN_HEIGHT = 400;
+const MAP_FULLSCREEN_HORIZONTAL_MARGIN = 16;
+const MAP_LEGEND_HEIGHT = 30;
+
+// Update the map control to describe the action it will perform.
+function setMapFullscreenControlState(control, expanded) {
+	var label = expanded ? 'Collapse map' : 'Expand map';
+	var icon = control.select('i');
+
+	control
+		.attr('aria-label', label)
+		.attr('aria-pressed', expanded ? 'true' : 'false')
+		.attr('title', label);
+	icon
+		.classed('fa-arrows-alt', !expanded)
+		.classed('fa-window-restore', expanded);
+}
+
+// Remove fullscreen state and controls from a map container.
+function clearMapFullscreen(selection) {
+	if (!selection || selection.empty()) return;
+
+	selection
+		.classed(MAP_FULLSCREEN_CLASS, false)
+		.on('.map-fullscreen', null)
+		.selectAll('.map-fullscreen-toggle')
+		.remove();
+	d3.select('body').classed(MAP_FULLSCREEN_BODY_CLASS,
+		!d3.select('.' + MAP_FULLSCREEN_CLASS).empty());
+}
+
+// Let Escape collapse the currently expanded map.
+d3.select(document).on('keydown.map-fullscreen', function(event) {
+	if (event.key !== 'Escape') return;
+
+	var control = d3.select('.' + MAP_FULLSCREEN_CLASS + ' .map-fullscreen-toggle');
+	if (!control.empty()) control.node().click();
+});
+
 // This is faster than calculating the exact length of each label.
 // e.g., getComputedTextLength(), slice()...
 function truncate(text, width) {
@@ -51,8 +92,14 @@ function WorldMap(selection) {
 		bottom: 40,
 		left: 50
 	};
+	let normalLeftMargin = margin.left;
+	let normalRightMargin = margin.right;
 	let width = 760;
 	let height = 170;
+	let normalHeight = height;
+	let renderedHeight = 0;
+	let renderedProjectionType = null;
+	let renderedWidth = 0;
 	// default value; will be set externally
 	let projectionType = 'mercator';
 	let initialScale;
@@ -66,6 +113,69 @@ function WorldMap(selection) {
 
 	function innerH() {
 		return height - margin.top - margin.bottom;
+	}
+
+	function getStyleSize(value) {
+		return parseFloat(value) || 0;
+	}
+
+	function getContentSize(selectionElem) {
+		var style = window.getComputedStyle(selectionElem);
+		var horizontalPadding = getStyleSize(style.paddingLeft) + getStyleSize(style.paddingRight);
+		var verticalPadding = getStyleSize(style.paddingTop) + getStyleSize(style.paddingBottom);
+
+		return {
+			width: selectionElem.clientWidth - horizontalPadding,
+			height: selectionElem.clientHeight - verticalPadding
+		};
+	}
+
+	function syncDimensions(selectionElem) {
+		var expanded = selectionElem.classList.contains(MAP_FULLSCREEN_CLASS);
+		var size = getContentSize(selectionElem);
+
+		margin.left = expanded ? MAP_FULLSCREEN_HORIZONTAL_MARGIN : normalLeftMargin;
+		margin.right = expanded ? MAP_FULLSCREEN_HORIZONTAL_MARGIN : normalRightMargin;
+		width = size.width;
+		height = expanded
+			? Math.max(MAP_FULLSCREEN_MIN_HEIGHT, size.height - MAP_LEGEND_HEIGHT)
+			: normalHeight;
+	}
+
+	function dimensionsChanged() {
+		return renderedWidth !== width || renderedHeight !== height ||
+			renderedProjectionType !== projectionType;
+	}
+
+	function resetMap(selection) {
+		selection.selectAll('svg.map, svg.legend-svg').remove();
+		tlast = [0, 0];
+		slast = null;
+	}
+
+	function addFullscreenControl(selection) {
+		var control = selection.select('.map-fullscreen-toggle');
+
+		if (control.empty()) {
+			control = selection.append('button')
+				.attr('class', 'btn btn-default btn-sm map-fullscreen-toggle')
+				.attr('type', 'button');
+			control.append('i')
+				.attr('class', 'fa fa-arrows-alt')
+				.attr('aria-hidden', 'true');
+		}
+
+		setMapFullscreenControlState(control, selection.classed(MAP_FULLSCREEN_CLASS));
+		control.on('click.map-fullscreen', function(event) {
+			var expanded = !selection.classed(MAP_FULLSCREEN_CLASS);
+
+			event.preventDefault();
+			selection.classed(MAP_FULLSCREEN_CLASS, expanded);
+			d3.select('body').classed(MAP_FULLSCREEN_BODY_CLASS, expanded);
+			setMapFullscreenControlState(control, expanded);
+			resetMap(selection);
+			selection.call(chart);
+		});
 	}
 
 	function buildCityIndex() {
@@ -254,7 +364,7 @@ function WorldMap(selection) {
 		if (svg.empty()) {
 			svg = selection.append('svg')
 				.attr('class', 'legend-svg')
-				.attr('width', width + margin.left + margin.right)
+				.attr('width', width)
 				.attr('height', legendHeight + 2 * legendPadding);
 		}
 		let legend = svg.select('.legend');
@@ -662,6 +772,7 @@ function WorldMap(selection) {
 
 	function chart(selectionData) {
 		selectionData.each(function(data) {
+			var chartSelection = d3.select(this);
 			const worldData = window.countries110m;
 			const countries = topojson.feature(worldData, worldData.objects.countries)
 				.features; /* Build a mapping from country names to GeoJSON if needed */
@@ -669,7 +780,11 @@ function WorldMap(selection) {
 			countries.forEach(country => {
 				countryNameToGeoJson[country.properties.name] = country;
 			});
-			let svgObj = d3.select(this)
+			syncDimensions(this);
+			if (dimensionsChanged()) resetMap(chartSelection);
+			addFullscreenControl(chartSelection);
+
+			let svgObj = chartSelection
 				.select('svg.map');
 			let g;
 			if (svgObj.empty()) {
@@ -680,8 +795,11 @@ function WorldMap(selection) {
 				/* If the SVG already exists, select its group */
 				g = svgObj.select('g');
 			}
-			updateMap(d3.select(this), svgObj, data, countries, countryNameToGeoJson); /* Update sphere in case the projection is orthographic */
+			updateMap(chartSelection, svgObj, data, countries, countryNameToGeoJson); /* Update sphere in case the projection is orthographic */
 			updateSphere(svgObj, g);
+			renderedWidth = width;
+			renderedHeight = height;
+			renderedProjectionType = projectionType;
 		});
 	}
 	// Getter-setter for metric
@@ -706,6 +824,7 @@ function WorldMap(selection) {
 	chart.height = function(_) {
 		if (!arguments.length) return height;
 		height = _;
+		normalHeight = _;
 		return chart;
 	};
 	// Getter-setter for projectionType
@@ -720,6 +839,7 @@ function WorldMap(selection) {
 		panelName = _;
 		return chart;
 	};
+	chart.isWorldMap = true;
 
 	return chart;
 }

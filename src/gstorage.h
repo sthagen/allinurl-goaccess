@@ -35,7 +35,7 @@
 
 #define DB_PATH "/tmp"
 
-#define GAMTRC_TOTAL 8
+#define GAMTRC_TOTAL 9
 /* Enumerated App Metrics */
 typedef enum GAMetric_ {
   MTRC_DATES,
@@ -46,6 +46,7 @@ typedef enum GAMetric_ {
   MTRC_JSON_LOGFMT,
   MTRC_METH_PROTO,
   MTRC_DB_PROPS,
+  MTRC_COUNTRY_CONTINENT,
 } GAMetric;
 
 /* Enumerated Storage Metrics */
@@ -60,8 +61,6 @@ typedef enum GSMetricType_ {
   MTRC_TYPE_SI32,
   /* string key   - uint8_t val */
   MTRC_TYPE_SI08,
-  /* uint32_t key - uint8_t val */
-  MTRC_TYPE_II08,
   /* string key   - string val */
   MTRC_TYPE_SS32,
   /* uint32_t key - GSLList val */
@@ -74,7 +73,38 @@ typedef enum GSMetricType_ {
   MTRC_TYPE_U648,
   /* uint64_t key - GLastParse val */
   MTRC_TYPE_IGLP,
+  /* uint32_t key - GKMetricVals val */
+  MTRC_TYPE_IMTV,
+  /* uint64_t key - uint32_t val */
+  MTRC_TYPE_U6432,
 } GSMetricType;
+
+/* Marks which zero-representable numeric metrics have been written for a data
+ * key. Needed to persist the exact same entry set as the former standalone
+ * bw/cumts tables, where a value of zero was still a present entry. */
+#define METRIC_TOUCHED_BW    0x01
+#define METRIC_TOUCHED_CUMTS 0x02
+
+/* Top bit of a MTRC_UNIQUE_KEYS value marks the visitor as already counted
+ * towards visitor metrics; the sequence value occupies the lower 31 bits.
+ * Modules whose data key derives solely from the visitor key use this bit
+ * instead of a per-module uniqmap entry. */
+#define VISITOR_COUNTED_BIT 0x80000000u
+
+/* Aggregated numeric metrics for a data key within a module/date store. All
+ * per-data-key numeric metrics live in a single MTRC_METRICS table entry
+ * instead of one hash table per metric. */
+typedef struct GKMetricVals_ {
+  uint64_t bw;
+  uint64_t cumts;
+  uint64_t maxts;
+  uint32_t hits;
+  uint32_t visitors;
+  uint32_t root;
+  uint8_t meth;
+  uint8_t proto;
+  uint8_t touched;
+} GKMetricVals;
 
 typedef struct GKHashMetric_ {
   union {
@@ -105,7 +135,6 @@ typedef struct GKeyData_ {
   uint32_t root_nkey;
   uint32_t crnkey;              /* cache root nkey */
 
-  void *uniq_key;
   uint32_t uniq_nkey;
 
   uint32_t numdate;
@@ -126,6 +155,10 @@ typedef struct GParse_ {
   void (*method) (GModule module, GKeyData * kdata, const char *data);
   void (*protocol) (GModule module, GKeyData * kdata, const char *data);
   void (*agent) (GModule module, GKeyData * kdata, uint32_t agent_nkey);
+  /* the data key derives solely from the visitor key (IP/date/agent), so a
+   * visitor can only ever produce one data key in this module; visitor
+   * counting then keys off the visitor's counted bit instead of a uniqmap */
+  uint8_t vkey_data;
 } GParse;
 
 typedef struct httpmethods_ {
@@ -145,6 +178,7 @@ extern const size_t http_protocols_len;
 
 const char *get_mtr_str (GSMetric metric);
 int excluded_ip (GLogItem * logitem);
+int module_vkey_data (GModule module);
 uint32_t *i322ptr (uint32_t val);
 uint64_t *uint642ptr (uint64_t val);
 void count_process_and_invalid (GLog * glog, GLogItem * logitem, const char *line);
@@ -161,7 +195,6 @@ GMetrics *new_gmetrics (void);
 
 #ifdef HAVE_GEOLOCATION
 const char *get_continent_for_country (const char *country);
-void free_country_continent_map (void);
 #endif
 
 #endif // for #ifndef GSTORAGE_H

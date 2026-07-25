@@ -586,7 +586,7 @@ geoip_asn (char *host, char *asn) {
  * On error, 1 is returned
  * On success, buffers are set and 0 is returned */
 int
-set_geolocation (char *host, char *continent, char *country, char *city, GO_UNUSED char *asn) {
+set_geolocation (char *host, char *continent, char *country, char *city, char *asn) {
   int type_ip = 0;
 
   if (!is_geoip_resource ())
@@ -595,8 +595,9 @@ set_geolocation (char *host, char *continent, char *country, char *city, GO_UNUS
   if (invalid_ipaddr (host, &type_ip))
     return 1;
 
-  /* set ASN data */
-  geoip_asn (host, asn);
+  /* set ASN data; callers that pass NULL skip the extra query */
+  if (asn)
+    geoip_asn (host, asn);
 
   /* set Country/City data */
   if (set_geoip_db (TYPE_COUNTRY) == 0 || set_geoip_db (TYPE_CITY) == 0) {

@@ -51,56 +51,87 @@
 #include "xmalloc.h"
 
 #ifdef HAVE_GEOLOCATION
-/* Static hash map: country string -> continent string.
- * Populated during parsing, queried during holder construction. */
-static
-khash_t (ss32) *
-  country_continent_map = NULL;
-
+/* Record the continent the GeoIP database resolved a country to. */
 static void
 set_country_continent (const char *country, const char *continent) {
-  khint_t k;
-  int ret;
-
   if (country == NULL || continent == NULL)
     return;
-  if (country_continent_map == NULL)
-    country_continent_map = kh_init (ss32);
-
-  k = kh_get (ss32, country_continent_map, country);
-  if (k != kh_end (country_continent_map))
-    return;     /* already exists */
-
-  k = kh_put (ss32, country_continent_map, xstrdup (country), &ret);
-  if (ret)
-    kh_val (country_continent_map, k) = xstrdup (continent);
+  ht_insert_country_continent (country, continent);
 }
 
+/* *INDENT-OFF* */
+/* ISO 3166-1 alpha-2 country codes grouped by continent. Used as a static
+ * fallback only when a country was restored from a database persisted
+ * before country-to-continent associations were stored; the persisted
+ * association always takes precedence since providers disagree on a few
+ * territories. Codes are space separated and space terminated so a "XX "
+ * pattern matches exactly one code. */
+static const struct {
+  const char *codes;
+  const char *continent;
+} continents_by_country[] = {
+  { "AO BF BI BJ BW CD CF CG CI CM CV DJ DZ EG EH ER ET GA GH GM GN GQ GW "
+    "KE KM LR LS LY MA MG ML MR MU MW MZ NA NE NG RE RW SC SD SH SL SN SO "
+    "SS ST SZ TD TG TN TZ UG YT ZA ZM ZW "                                    , "AF Africa"        } ,
+  { "AQ BV GS HM TF "                                                         , "AN Antarctica"    } ,
+  { "AE AF AM AZ BD BH BN BT CC CN GE HK ID IL IN IO IQ IR JO JP KG KH KP "
+    "KR KW KZ LA LB LK MM MN MO MV MY NP OM PH PK PS QA SA SG SY TH TJ TM "
+    "TR TW UZ VN YE "                                                         , "AS Asia"          } ,
+  { "AD AL AT AX BA BE BG BY CH CY CZ DE DK EE ES FI FO FR GB GG GI GR HR "
+    "HU IE IM IS IT JE LI LT LU LV MC MD ME MK MT NL NO PL PT RO RS RU SE "
+    "SI SJ SK SM UA VA XK "                                                   , "EU Europe"        } ,
+  { "AG AI AW BB BL BM BQ BS BZ CA CR CU CW DM DO GD GL GP GT HN HT JM KN "
+    "KY LC MF MQ MS MX NI PA PM PR SV SX TC TT US VC VG VI "                  , "NA North America" } ,
+  { "AS AU CK CX FJ FM GU KI MH MP NC NF NR NU NZ PF PG PN PW SB TK TL TO "
+    "TV UM VU WF WS "                                                         , "OC Oceania"       } ,
+  { "AR BO BR CL CO EC FK GF GY PE PY SR UY VE "                             , "SA South America" } ,
+};
+/* *INDENT-ON* */
+
+/* Look up the continent for a "CODE Name" country label in the static
+ * country code table.
+ *
+ * On success, the continent code & name label is returned.
+ * If the country code is not found, NULL is returned. */
+static const char *
+get_static_continent (const char *country) {
+  char code[4] = { 0 };
+  size_t i;
+
+  if (!country[0] || !country[1] || country[2] != ' ')
+    return NULL;
+
+  code[0] = country[0];
+  code[1] = country[1];
+  code[2] = ' ';
+
+  for (i = 0; i < ARRAY_SIZE (continents_by_country); ++i) {
+    if (strstr (continents_by_country[i].codes, code))
+      return continents_by_country[i].continent;
+  }
+  return NULL;
+}
+
+/* Get the continent for the given country, preferring the association
+ * recorded during ingestion over the static table.
+ *
+ * On success, the continent code & name label is returned.
+ * On failure, NULL is returned. */
 const char *
 get_continent_for_country (const char *country) {
-  khint_t k;
-  if (country_continent_map == NULL || country == NULL)
+  const char *continent = NULL;
+
+  if (country == NULL)
     return NULL;
-  k = kh_get (ss32, country_continent_map, country);
-  if (k == kh_end (country_continent_map))
-    return NULL;
-  return kh_val (country_continent_map, k);
+
+  if ((continent = ht_get_country_continent (country)))
+    return continent;
+
+  /* databases persisted before the association was stored have nothing to
+   * restore; fall back to the static mapping */
+  return get_static_continent (country);
 }
 
-void
-free_country_continent_map (void) {
-  khint_t k;
-  if (country_continent_map == NULL)
-    return;
-  for (k = kh_begin (country_continent_map); k != kh_end (country_continent_map); ++k) {
-    if (!kh_exist (country_continent_map, k))
-      continue;
-    free ((char *) kh_key (country_continent_map, k));
-    free (kh_val (country_continent_map, k));
-  }
-  kh_destroy (ss32, country_continent_map);
-  country_continent_map = NULL;
-}
 #endif
 
 /* private prototypes */
@@ -154,6 +185,7 @@ const httpmethods http_methods[] = {
   { "CONNECT"          , 7  } ,
   { "PATCH"            , 5  } ,
   { "SEARCH"           , 6  } ,
+  { "QUERY"            , 5  } ,
   /* WebDav */
   { "PROPFIND"         , 8  } ,
   { "PROPPATCH"        , 9  } ,
@@ -199,6 +231,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    1, /* vkey_data */
   }, {
     REQUESTS,
     gen_request_key,
@@ -212,6 +245,7 @@ static const GParse paneling[] = {
     insert_method,
     insert_protocol,
     NULL,
+    0, /* vkey_data */
   }, {
     REQUESTS_STATIC,
     gen_static_request_key,
@@ -225,6 +259,7 @@ static const GParse paneling[] = {
     insert_method,
     insert_protocol,
     NULL,
+    0, /* vkey_data */
   }, {
     NOT_FOUND,
     gen_404_key,
@@ -238,6 +273,7 @@ static const GParse paneling[] = {
     insert_method,
     insert_protocol,
     NULL,
+    0, /* vkey_data */
   }, {
     HOSTS,
     gen_host_key,
@@ -251,6 +287,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     insert_agent,
+    1, /* vkey_data */
   }, {
     OS,
     gen_os_key,
@@ -264,6 +301,7 @@ static const GParse paneling[] = {
     insert_method,
     insert_protocol,
     NULL,
+    1, /* vkey_data */
   }, {
     BROWSERS,
     gen_browser_key,
@@ -277,6 +315,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    1, /* vkey_data */
   }, {
     REFERRERS,
     gen_referer_key,
@@ -290,6 +329,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     REFERRING_SITES,
     gen_ref_site_key,
@@ -303,6 +343,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     KEYPHRASES,
     gen_keyphrase_key,
@@ -316,6 +357,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   },
 #ifdef HAVE_GEOLOCATION
   {
@@ -331,6 +373,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    1, /* vkey_data */
   },
   {
     ASN,
@@ -345,6 +388,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    1, /* vkey_data */
   },
 #endif
   {
@@ -360,6 +404,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     VISIT_TIMES,
     gen_visit_time_key,
@@ -373,6 +418,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     VIRTUAL_HOSTS,
     gen_vhost_key,
@@ -386,6 +432,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     REMOTE_USER,
     gen_remote_user_key,
@@ -399,6 +446,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     CACHE_STATUS,
     gen_cache_status_key,
@@ -412,6 +460,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   }, {
     MIME_TYPE,
     gen_mime_type_key,
@@ -425,6 +474,7 @@ static const GParse paneling[] = {
     NULL, /*method*/
     NULL, /*protocol*/
     NULL, /*agent*/
+    0, /* vkey_data */
   }, {
     TLS_TYPE,
     gen_tls_type_key,
@@ -438,6 +488,7 @@ static const GParse paneling[] = {
     NULL,
     NULL,
     NULL,
+    0, /* vkey_data */
   },
 };
 /* *INDENT-ON* */
@@ -452,7 +503,6 @@ new_modulekey (GKeyData *kdata) {
     .dhash = 0,
     .rhash = 0,
     .root_nkey = 0,
-    .uniq_key = NULL,
     .uniq_nkey = 0,
   };
   *kdata = key;
@@ -471,6 +521,30 @@ panel_lookup (GModule module) {
       return &paneling[i];
   }
   return NULL;
+}
+
+/* Determine whether a panel's data key derives solely from the visitor key
+ * under the current configuration. With an hour/minute date specificity the
+ * VISITORS data key carries time of day, which the visitor key does not.
+ *
+ * If the panel counts visitors off the visitor key, non-zero is returned.
+ * Otherwise, 0 is returned. */
+static int
+is_vkey_data (const GParse *parse) {
+  if (parse->module == VISITORS && conf.date_spec_hr)
+    return 0;
+  return parse->vkey_data;
+}
+
+/* Determine whether a module's data key derives solely from the visitor key
+ * and therefore holds no uniqmap entries.
+ *
+ * If the module counts visitors off the visitor key, non-zero is returned.
+ * Otherwise, 0 is returned. */
+int
+module_vkey_data (GModule module) {
+  const GParse *parse = panel_lookup (module);
+  return parse ? is_vkey_data (parse) : 0;
 }
 
 /* Allocate memory for a new GMetrics instance.
@@ -507,6 +581,7 @@ get_mtr_str (GSMetric metric) {
     {"MTRC_ROOTMAP", MTRC_ROOTMAP},
     {"MTRC_DATAMAP", MTRC_DATAMAP},
     {"MTRC_UNIQMAP", MTRC_UNIQMAP},
+    {"MTRC_METRICS", MTRC_METRICS},
     {"MTRC_ROOT", MTRC_ROOT},
     {"MTRC_HITS", MTRC_HITS},
     {"MTRC_VISITORS", MTRC_VISITORS},
@@ -553,7 +628,7 @@ void
 set_module_totals (GPercTotals *totals) {
   totals->bw = ht_sum_bw ();
   totals->hits = ht_sum_valid ();
-  totals->visitors = ht_get_size_uniqmap (VISITORS);
+  totals->visitors = ht_sum_uniq_visitors ();
 }
 
 /* Set numeric metrics for each request given raw data.
@@ -1312,12 +1387,11 @@ gen_keyphrase_key (GKeyData *kdata, GLogItem *logitem) {
  * returned. */
 static int
 extract_geolocation (GLogItem *logitem, char *continent, char *country, char *city) {
-  char asn_unused[ASN_LEN] = "";
-
   if (!is_geoip_resource ())
     return 1;
 
-  set_geolocation (logitem->host, continent, country, city, asn_unused);
+  /* NULL asn: the ASN panel performs its own lookup */
+  set_geolocation (logitem->host, continent, country, city, NULL);
 
   return 0;
 }
@@ -1532,9 +1606,20 @@ map_log (GLogItem *logitem, const GParse *parse, GModule module) {
   if (parse->datamap && kdata.data)
     kdata.data_nkey = insert_dkeymap (module, &kdata);
 
-  /* each module contains a uniq visitor key/value */
-  if (parse->visitor && logitem->uniq_key && include_uniq (logitem))
-    kdata.uniq_nkey = insert_uniqmap (module, &kdata, logitem->uniq_nkey);
+  /* each module contains a uniq visitor key/value; when the data key derives
+   * solely from the visitor key, a visitor is new to this module exactly when
+   * this is their first counted request, so no uniqmap entry is needed */
+  if (parse->visitor && logitem->uniq_key && include_uniq (logitem)) {
+    if (is_vkey_data (parse))
+      kdata.uniq_nkey = logitem->uniq_first;
+    else
+      kdata.uniq_nkey = insert_uniqmap (module, &kdata, logitem->uniq_nkey);
+
+    /* the per-date visitors counter is authoritative for the overall total
+     * and advances exactly when the VISITORS panel counts a visitor */
+    if (module == VISITORS && kdata.uniq_nkey == 1)
+      ht_inc_cnt_visitors (kdata.numdate);
+  }
 
   /* root keys are optional */
   if (parse->rootmap && kdata.root)
@@ -1608,7 +1693,10 @@ process_log (GLogItem *logitem) {
 
   /* Insert one unique visitor key per request to avoid the
    * overhead of storing one key per module */
-  if ((logitem->uniq_nkey = ht_insert_unique_key (numdate, logitem->uniq_key)) == 0)
+  logitem->uniq_nkey =
+    ht_insert_unique_key (numdate, logitem->uniq_key, include_uniq (logitem),
+                          &logitem->uniq_first);
+  if (logitem->uniq_nkey == 0)
     return;
 
   /* If we need to store user agents per IP, then we store them and retrieve

@@ -79,13 +79,14 @@ get_mtr_type_str (GSMetricType type) {
     {"IU64", MTRC_TYPE_IU64},
     {"SI32", MTRC_TYPE_SI32},
     {"SI08", MTRC_TYPE_SI08},
-    {"II08", MTRC_TYPE_II08},
     {"SS32", MTRC_TYPE_SS32},
     {"IGSL", MTRC_TYPE_IGSL},
     {"SU64", MTRC_TYPE_SU64},
     {"IGKH", MTRC_TYPE_IGKH},
     {"U648", MTRC_TYPE_U648},
     {"IGLP", MTRC_TYPE_IGLP},
+    {"IMTV", MTRC_TYPE_IMTV},
+    {"U6432", MTRC_TYPE_U6432},
   };
   return enum2str (enum_metric_types, ARRAY_SIZE (enum_metric_types), type);
 }
@@ -94,13 +95,6 @@ get_mtr_type_str (GSMetricType type) {
 void *
 new_igsl_ht (void) {
   khash_t (igsl) * h = kh_init (igsl);
-  return h;
-}
-
-/* Initialize a new string key - uint32_t value hash table */
-void *
-new_ii08_ht (void) {
-  khash_t (ii08) * h = kh_init (ii08);
   return h;
 }
 
@@ -139,10 +133,24 @@ new_su64_ht (void) {
   return h;
 }
 
-/* Initialize a new uint64_t key - uint8_t value hash table */
+/* Initialize a new uint64_t key set */
 void *
 new_u648_ht (void) {
   khash_t (u648) * h = kh_init (u648);
+  return h;
+}
+
+/* Initialize a new uint32_t key - GKMetricVals value hash table */
+void *
+new_imtv_ht (void) {
+  khash_t (imtv) * h = kh_init (imtv);
+  return h;
+}
+
+/* Initialize a new uint64_t key - uint32_t value hash table */
+void *
+new_u6432_ht (void) {
+  khash_t (u6432) * h = kh_init (u6432);
   return h;
 }
 
@@ -199,21 +207,6 @@ del_igsl_free (void *h, uint8_t free_data) {
       list_remove_nodes (list);
     }
     kh_del (igsl, hash, k);
-  }
-}
-
-/* Deletes all entries from the hash table */
-void
-del_ii08 (void *h, GO_UNUSED uint8_t free_data) {
-  khint_t k;
-  khash_t (ii08) * hash = h;
-  if (!hash)
-    return;
-
-  for (k = 0; k < kh_end (hash); ++k) {
-    if (kh_exist (hash, k)) {
-      kh_del (ii08, hash, k);
-    }
   }
 }
 
@@ -314,6 +307,36 @@ del_u648 (void *h, GO_UNUSED uint8_t free_data) {
   }
 }
 
+/* Deletes all entries from the hash table */
+void
+del_imtv (void *h, GO_UNUSED uint8_t free_data) {
+  khint_t k;
+  khash_t (imtv) * hash = h;
+  if (!hash)
+    return;
+
+  for (k = 0; k < kh_end (hash); ++k) {
+    if (kh_exist (hash, k)) {
+      kh_del (imtv, hash, k);
+    }
+  }
+}
+
+/* Deletes all entries from the hash table */
+void
+del_u6432 (void *h, GO_UNUSED uint8_t free_data) {
+  khint_t k;
+  khash_t (u6432) * hash = h;
+  if (!hash)
+    return;
+
+  for (k = 0; k < kh_end (hash); ++k) {
+    if (kh_exist (hash, k)) {
+      kh_del (u6432, hash, k);
+    }
+  }
+}
+
 /* Destroys both the hash structure and its GSLList
  * values */
 void
@@ -334,15 +357,6 @@ des_igsl_free (void *h, uint8_t free_data) {
   }
 des:
   kh_destroy (igsl, hash);
-}
-
-/* Destroys the hash structure */
-void
-des_ii08 (void *h, GO_UNUSED uint8_t free_data) {
-  khash_t (ii08) * hash = h;
-  if (!hash)
-    return;
-  kh_destroy (ii08, hash);
 }
 
 /* Destroys the hash structure */
@@ -434,6 +448,24 @@ des_u648 (void *h, GO_UNUSED uint8_t free_data) {
   if (!hash)
     return;
   kh_destroy (u648, hash);
+}
+
+/* Destroys the hash structure */
+void
+des_imtv (void *h, GO_UNUSED uint8_t free_data) {
+  khash_t (imtv) * hash = h;
+  if (!hash)
+    return;
+  kh_destroy (imtv, hash);
+}
+
+/* Destroys the hash structure */
+void
+des_u6432 (void *h, GO_UNUSED uint8_t free_data) {
+  khash_t (u6432) * hash = h;
+  if (!hash)
+    return;
+  kh_destroy (u6432, hash);
 }
 
 /* Destroys both the hash structure and the keys for a
@@ -539,6 +571,7 @@ const GKHashMetric app_metrics[] = {
   { .metric.dbm=MTRC_JSON_LOGFMT , MTRC_TYPE_SS32 , new_ss32_ht , des_ss32_free , del_ss32_free , 1 , NULL , NULL                  } ,
   { .metric.dbm=MTRC_METH_PROTO  , MTRC_TYPE_SI08 , new_si08_ht , des_si08_free , del_si08_free , 1 , NULL , "SI08_METH_PROTO.db"  } ,
   { .metric.dbm=MTRC_DB_PROPS    , MTRC_TYPE_SI32 , new_si32_ht , des_si32_free , del_si32_free , 1 , NULL , "SI32_DB_PROPS.db"    } ,
+  { .metric.dbm=MTRC_COUNTRY_CONTINENT , MTRC_TYPE_SS32 , new_ss32_ht , des_ss32_free , del_ss32_free , 1 , NULL , "SS32_COUNTRY_CONTINENT.db" } ,
 };
 
 const size_t app_metrics_len = ARRAY_SIZE (app_metrics);
@@ -900,28 +933,6 @@ ins_ii32 (khash_t (ii32) *hash, uint32_t key, uint32_t value) {
   return 0;
 }
 
-/* Insert an uint32_t key and an uint8_t value
- * Note: If the key exists, its value is replaced by the given value.
- *
- * On error, -1 is returned.
- * On success 0 is returned */
-int
-ins_ii08 (khash_t (ii08) *hash, uint32_t key, uint8_t value) {
-  khint_t k;
-  int ret;
-
-  if (!hash)
-    return -1;
-
-  k = kh_put (ii08, hash, key, &ret);
-  if (ret == -1)
-    return -1;
-
-  kh_val (hash, k) = value;
-
-  return 0;
-}
-
 /* Insert a uint32_t key and a uint64_t value
  * Note: If the key exists, its value is replaced by the given value.
  *
@@ -971,28 +982,67 @@ ins_su64 (khash_t (su64) *hash, const char *key, uint64_t value) {
   return 0;
 }
 
-/* Insert a uint64_t key and a uint8_t value
+/* Insert a uint64_t key into the set
  *
- * On error or key exists, -1 is returned.
+ * On error, -1 is returned.
  * On key exists, 1 is returned.
  * On success 0 is returned */
 int
-ins_u648 (khash_t (u648) *hash, uint64_t key, uint8_t value) {
-  khint_t k;
+ins_u648 (khash_t (u648) *hash, uint64_t key) {
   int ret;
 
   if (!hash)
     return -1;
 
-  k = kh_put (u648, hash, key, &ret);
+  kh_put (u648, hash, key, &ret);
   if (ret == -1)
     return -1;
   if (ret == 0)
     return 1;
 
-  kh_val (hash, k) = value;
-
   return 0;
+}
+
+/* Get the GKMetricVals of a given uint32_t key.
+ *
+ * If the key is not found, NULL is returned.
+ * On success a pointer to the stored GKMetricVals is returned */
+GKMetricVals *
+get_imtv (khash_t (imtv) *hash, uint32_t key) {
+  khint_t k;
+
+  if (!hash)
+    return NULL;
+
+  k = kh_get (imtv, hash, key);
+  if (k == kh_end (hash))
+    return NULL;
+
+  return &kh_val (hash, k);
+}
+
+/* Get the GKMetricVals of a given uint32_t key, creating a zeroed entry if
+ * the key is not present.
+ *
+ * On error, NULL is returned.
+ * On success a pointer to the stored GKMetricVals is returned */
+GKMetricVals *
+ins_imtv (khash_t (imtv) *hash, uint32_t key) {
+  static const GKMetricVals zeroed = { 0 };
+  khint_t k;
+  int ret;
+
+  if (!hash)
+    return NULL;
+
+  k = kh_put (imtv, hash, key, &ret);
+  if (ret == -1)
+    return NULL;
+  /* newly inserted keys start from all-zero metrics */
+  if (ret != 0)
+    kh_val (hash, k) = zeroed;
+
+  return &kh_val (hash, k);
 }
 
 /* Increase an uint32_t value given an uint32_t key.
@@ -1226,25 +1276,6 @@ get_si08 (khash_t (si08) *hash, const char *key) {
   return 0;
 }
 
-/* Get the uint8_t value of a given string key.
- *
- * On error, 0 is returned.
- * On success the uint8_t value for the given key is returned */
-uint8_t
-get_ii08 (khash_t (ii08) *hash, uint32_t key) {
-  khint_t k;
-
-  if (!hash)
-    return 0;
-
-  k = kh_get (ii08, hash, key);
-  /* key found, return current value */
-  if (k != kh_end (hash))
-    return kh_val (hash, k);
-
-  return 0;
-}
-
 /* Get the string value of a given uint32_t key.
  *
  * On error, NULL is returned.
@@ -1366,64 +1397,6 @@ get_iglp (khash_t (iglp) *hash, uint64_t key) {
   }
 
   return lp;
-}
-
-/* Iterate over all the key/value pairs for the given hash structure
- * and set the maximum and minimum values found on an integer key and
- * integer value.
- *
- * Note: These are expensive calls since it has to iterate over all
- * key-value pairs
- *
- * If the hash structure is empty, no values are set.
- * On success the minimum and maximum values are set. */
-void
-get_ii32_min_max (khash_t (ii32) *hash, uint32_t *min, uint32_t *max) {
-  khint_t k;
-  uint32_t curvalue = 0;
-  int i;
-
-  for (i = 0, k = kh_begin (hash); k != kh_end (hash); ++k) {
-    if (!kh_exist (hash, k))
-      continue;
-
-    curvalue = kh_value (hash, k);
-    if (i++ == 0)
-      *min = curvalue;
-    if (curvalue > *max)
-      *max = curvalue;
-    if (curvalue < *min)
-      *min = curvalue;
-  }
-}
-
-/* Iterate over all the key/value pairs for the given hash structure
- * and set the maximum and minimum values found on an integer key and
- * a uint64_t value.
- *
- * Note: These are expensive calls since it has to iterate over all
- * key-value pairs
- *
- * If the hash structure is empty, no values are set.
- * On success the minimum and maximum values are set. */
-void
-get_iu64_min_max (khash_t (iu64) *hash, uint64_t *min, uint64_t *max) {
-  khint_t k;
-  uint64_t curvalue = 0;
-  int i;
-
-  for (i = 0, k = kh_begin (hash); k != kh_end (hash); ++k) {
-    if (!kh_exist (hash, k))
-      continue;
-
-    curvalue = kh_value (hash, k);
-    if (i++ == 0)
-      *min = curvalue;
-    if (curvalue > *max)
-      *max = curvalue;
-    if (curvalue < *min)
-      *min = curvalue;
-  }
 }
 
 uint32_t
@@ -1572,6 +1545,49 @@ ht_get_last_parse (uint64_t key) {
   GKDB *db = get_db_instance (DB_INSTANCE);
   khash_t (iglp) * hash = get_hdb (db, MTRC_LAST_PARSE);
   return get_iglp (hash, key);
+}
+
+/* Insert a country mapped to the continent the GeoIP database resolved it
+ * to, so restored data can rebuild the exact hierarchy recorded during
+ * ingestion.
+ *
+ * On success 0 is returned.
+ * If the country exists, 1 is returned.
+ * On error, -1 is returned. */
+int
+ht_insert_country_continent (const char *country, const char *continent) {
+  GKDB *db = get_db_instance (DB_INSTANCE);
+  khash_t (ss32) * hash = get_hdb (db, MTRC_COUNTRY_CONTINENT);
+
+  if (!hash)
+    return -1;
+
+  /* called per parsed line; avoid the insert path's key duplication once
+   * the country is already recorded */
+  if (kh_get (ss32, hash, country) != kh_end (hash))
+    return 1;
+
+  return ins_ss32 (hash, country, continent);
+}
+
+/* Get the continent recorded for the given country during ingestion.
+ *
+ * On success, a borrowed pointer to the continent label is returned.
+ * On error or not found, NULL is returned. */
+const char *
+ht_get_country_continent (const char *country) {
+  GKDB *db = get_db_instance (DB_INSTANCE);
+  khash_t (ss32) * hash = get_hdb (db, MTRC_COUNTRY_CONTINENT);
+  khint_t k;
+
+  if (!hash)
+    return NULL;
+
+  k = kh_get (ss32, hash, country);
+  if (k == kh_end (hash))
+    return NULL;
+
+  return kh_val (hash, k);
 }
 
 /* Get the string value from ht_hostnames given a string key (IP).

@@ -291,7 +291,8 @@ init_log_item (GLog *glog) {
   logitem->serve_time = 0;
   logitem->status = -1;
   logitem->time = NULL;
-  logitem->uniq_key = NULL;
+  logitem->uniq_key = 0;
+  logitem->uniq_first = 0;
   logitem->vhost = NULL;
   logitem->userid = NULL;
   logitem->cache_status = NULL;
@@ -303,7 +304,6 @@ init_log_item (GLog *glog) {
   logitem->tls_type_cypher = NULL;
 
   memset (logitem->site, 0, sizeof (logitem->site));
-  memset (logitem->agent_hex, 0, sizeof (logitem->agent_hex));
   logitem->dt = glog->start_time;
 
   return logitem;
@@ -355,8 +355,6 @@ free_glog (GLogItem *logitem) {
     free (logitem->req);
   if (logitem->time != NULL)
     free (logitem->time);
-  if (logitem->uniq_key != NULL)
-    free (logitem->uniq_key);
   if (logitem->userid != NULL)
     free (logitem->userid);
   if (logitem->cache_status != NULL)
@@ -877,12 +875,12 @@ set_numeric_date (uint32_t *numdate, const char *date) {
 static void
 set_agent_hash (GLogItem *logitem) {
   logitem->agent_hash = djb2 ((unsigned char *) logitem->agent);
-  sprintf (logitem->agent_hex, "%" PRIx32, logitem->agent_hash);
 }
 
 static int
 handle_default_case_token (const char **str, const char *p) {
-  char *pch = NULL;
+  const char *pch = NULL;
+
   if ((pch = strchr (*str, p[1])) != NULL)
     *str += pch - *str;
   return 0;
@@ -980,9 +978,10 @@ parse_specifier (GLogItem *logitem, const char **str, const char *p, const char 
   struct tm tm;
   const char *dfmt = conf.date_format;
   const char *tfmt = conf.time_format;
+  const char *pch = NULL;
   char norm_mime[MAX_MIME_OUT] = { 0 };
 
-  char *pch, *sEnd, *bEnd, *tkn = NULL;
+  char *sEnd = NULL, *bEnd = NULL, *tkn = NULL;
   double serve_secs = 0.0;
   uint64_t bandw = 0, serve_time = 0;
   int dspc = 0, fmtspcs = 0;
@@ -1662,11 +1661,19 @@ void
 output_logerrors (void) {
   Logs *logs = get_db_logs (DB_INSTANCE);
   GLog *glog = NULL;
-  int pid = getpid (), i;
+  int pid = getpid (), i = 0, j = 0;
+  uint8_t nerrors = 0;
 
   for (i = 0; i < logs->size; ++i) {
     glog = &logs->glog[i];
-    if (!glog->log_erridx)
+
+    /* Snapshot the atomic error count once. A distinct inner index keeps
+     * the outer file index monotonic (a shared index would let the inner
+     * loop rewind it and, with more sources than errors, never terminate),
+     * and the snapshot keeps the printed count consistent with the lines
+     * emitted even if a parse thread is still appending. */
+    nerrors = atomic_load (&glog->log_erridx);
+    if (!nerrors)
       continue;
 
     fprintf (stderr, "==%d== GoAccess - version %s - %s %s\n", pid, GO_VERSION, __DATE__, __TIME__);
@@ -1676,11 +1683,11 @@ output_logerrors (void) {
     fprintf (stderr, "==%d==\n", pid);
     fprintf (stderr, "==%d== FILE: %s\n", pid, glog->props.filename);
     fprintf (stderr, "==%d== ", pid);
-    fprintf (stderr, ERR_PARSED_NLINES, glog->log_erridx);
+    fprintf (stderr, ERR_PARSED_NLINES, nerrors);
     fprintf (stderr, " %s:\n", ERR_PARSED_NLINES_DESC);
     fprintf (stderr, "==%d==\n", pid);
-    for (i = 0; i < glog->log_erridx; ++i)
-      fprintf (stderr, "==%d== %s\n", pid, glog->errors[i]);
+    for (j = 0; j < nerrors; ++j)
+      fprintf (stderr, "==%d== %s\n", pid, glog->errors[j]);
   }
   fprintf (stderr, "==%d==\n", pid);
   fprintf (stderr, "==%d== %s\n", pid, ERR_FORMAT_HEADER);
@@ -1802,33 +1809,14 @@ ignore_line (GLogItem *logitem) {
   return 0;
 }
 
-/* The following generates a unique key to identity unique visitors.
- * The key is made out of the IP, date, and user agent.
- * Note that for readability, doing a simple snprintf/sprintf should
- * suffice, however, memcpy is the fastest solution
+/* The following generates a unique fingerprint to identify unique visitors.
+ * The fingerprint is made out of the IP and user agent hash; the date is
+ * implied by the per-date storage partitioning.
  *
- * On success the new unique visitor key is returned */
-static char *
+ * On success the unique visitor fingerprint is returned */
+static uint64_t
 get_uniq_visitor_key (GLogItem *logitem) {
-  char *key = NULL;
-  size_t s1, s2, s3;
-
-  s1 = strlen (logitem->date);
-  s2 = strlen (logitem->host);
-  s3 = strlen (logitem->agent_hex);
-
-  /* includes terminating null */
-  key = xcalloc (s1 + s2 + s3 + 3, sizeof (char));
-
-  memcpy (key, logitem->date, s1);
-
-  key[s1] = '|';
-  memcpy (key + s1 + 1, logitem->host, s2 + 1);
-
-  key[s1 + s2 + 1] = '|';
-  memcpy (key + s1 + s2 + 2, logitem->agent_hex, s3 + 1);
-
-  return key;
+  return visitor_fingerprint (logitem->host, logitem->agent_hash);
 }
 
 /* Determine if the current log has the content from the last time it was

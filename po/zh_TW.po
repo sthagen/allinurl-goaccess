@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: goaccess 1.10.2\n"
 "Report-Msgid-Bugs-To: hello@goaccess.io\n"
-"POT-Creation-Date: 2026-02-14 08:39-0600\n"
+"POT-Creation-Date: 2026-03-30 22:10-0500\n"
 "PO-Revision-Date: 2026-05-30 17:48+0800\n"
 "Last-Translator: Peter Dave Hello <hsu@peterdavehello.org>\n"
 "Language-Team: Traditional Chinese (Taiwan)\n"
@@ -516,7 +516,8 @@ msgid "'%1$s' panel is disabled"
 msgstr "'%1$s' 面板已停用"
 
 #: src/labels.h:321
-msgid "No input data was provided nor there's data to restore."
+#, fuzzy
+msgid "No input data was provided nor was there data to restore."
 msgstr "未提供輸入資料，也沒有可還原的資料。"
 
 #: src/labels.h:323
@@ -903,9 +904,7 @@ msgstr "429 - 請求過多：傳送了太多請求"
 msgid ""
 "430 - Request Header Fields Too Large: Too many URLs are requested within a "
 "certain time frame"
-msgstr ""
-"430 - 請求標頭欄位過大：在特定時間範圍內請求了"
-"太多 URL"
+msgstr "430 - 請求標頭欄位過大：在特定時間範圍內請求了太多 URL"
 
 #: src/labels.h:522
 msgid "431 - Request Header Fields Too Large"
@@ -923,9 +922,7 @@ msgstr "449 - 請重試：伺服器無法處理此請求"
 msgid ""
 "450 - Blocked by Windows Parental Controls: The Microsoft extension code "
 "indicated"
-msgstr ""
-"450 - 被 Windows 家長監護功能封鎖：由 Microsoft"
-" 擴充狀態碼表示"
+msgstr "450 - 被 Windows 家長監護功能封鎖：由 Microsoft 擴充狀態碼表示"
 
 #: src/labels.h:530
 msgid "451 - Unavailable For Legal Reasons"
@@ -943,9 +940,7 @@ msgstr "460 - AWS Elastic Load Balancing：用戶端關閉連線 "
 msgid ""
 "463 - AWS Elastic Load Balancing: The load balancer received more than 30 IP "
 "addresses"
-msgstr ""
-"463 - AWS Elastic Load Balancing：負載平衡器收到超過 30 個"
-" IP 位址"
+msgstr "463 - AWS Elastic Load Balancing：負載平衡器收到超過 30 個 IP 位址"
 
 #: src/labels.h:538
 msgid "464 - AWS Elastic Load Balancing: Incompatible protocol versions"
@@ -1027,17 +1022,13 @@ msgstr "524 - CloudFlare - 發生逾時"
 msgid ""
 "525 - SSL Handshake Failed: Cloudflare could not negotiate a SSL/TLS "
 "handshake"
-msgstr ""
-"525 - SSL 交握失敗：Cloudflare 無法協商 SSL/TLS"
-" 交握"
+msgstr "525 - SSL 交握失敗：Cloudflare 無法協商 SSL/TLS 交握"
 
 #: src/labels.h:578
 msgid ""
 "526 - Invalid SSL Certificate: Cloudflare could not validate the SSL "
 "certificate"
-msgstr ""
-"526 - 無效的 SSL 憑證：Cloudflare 無法驗證"
-" SSL 憑證"
+msgstr "526 - 無效的 SSL 憑證：Cloudflare 無法驗證 SSL 憑證"
 
 #: src/labels.h:580
 msgid "527 - Railgun Error: An interrupted connection"
@@ -1055,9 +1046,7 @@ msgstr "530 - 網站凍結：網站因閒置而被凍結"
 msgid ""
 "540 - Temporarily Disabled: The requested endpoint has been temporarily "
 "disabled"
-msgstr ""
-"540 - 暫時停用：請求的端點已被暫時"
-"停用"
+msgstr "540 - 暫時停用：請求的端點已被暫時停用"
 
 #: src/labels.h:588
 msgid "561 - Unauthorized: An error around authentication"
@@ -1067,9 +1056,7 @@ msgstr "561 - 未授權：驗證相關錯誤"
 msgid ""
 "598 - Network read timeout error: some HTTP proxies to signal a network read "
 "timeout"
-msgstr ""
-"598 - 網路讀取逾時錯誤：部分 HTTP Proxy 回報網路"
-"讀取逾時"
+msgstr "598 - 網路讀取逾時錯誤：部分 HTTP Proxy 回報網路讀取逾時"
 
 #: src/labels.h:592
 msgid "599 - Network Connect Timeout Error: An error used by some HTTP proxies"

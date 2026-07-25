@@ -254,7 +254,7 @@ print_csv_summary (FILE *fp) {
 
   /* visitors */
   fmt = "\"%d\",,\"%s\",,,,,,,,\"%" PRIu64 "\",\"%s\"\r\n";
-  total = ht_get_size_uniqmap (VISITORS);
+  total = ht_sum_uniq_visitors ();
   fprintf (fp, fmt, i++, GENER_ID, total, OVERALL_VISITORS);
 
   /* files */

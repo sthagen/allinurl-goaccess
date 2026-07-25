@@ -203,7 +203,7 @@ typedef struct WSFrame_ {
   unsigned char mask[4];        /* mask key */
   uint8_t res;                  /* extensions */
   int payload_offset;           /* end of header/start of payload */
-  int payloadlen;               /* payload length (for each frame) */
+  uint64_t payloadlen;          /* payload length (for each frame) */
 
   /* status flags */
   int reading;                  /* still reading frame's header part? */

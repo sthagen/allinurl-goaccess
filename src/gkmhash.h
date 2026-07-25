@@ -34,6 +34,10 @@
 
 typedef struct GKHashMetric_ GKHashMetric;
 
+/* Per-module cache backed by dense arrays indexed by cache key (ckey).
+ * Defined privately in gkmhash.c. */
+typedef struct GKCacheModule_ GKCacheModule;
+
 /* Data store per module */
 typedef struct GKHashModule_ {
   GModule module;
@@ -42,7 +46,7 @@ typedef struct GKHashModule_ {
 
 /* Data store global */
 typedef struct GKHashGlobal_ {
-  GKHashMetric metrics[GSMTRC_TOTAL];
+  GKHashMetric metrics[GLOBAL_METRICS_TOTAL];
 } GKHashGlobal;
 
 struct GKHashStorage_ {
@@ -58,13 +62,14 @@ struct GKHashStorage_ {
 
 /* GLOBAL METRICS */
 /* ============== */
-/* Maps a string key containing an IP|DATE|UA(hash uint32_t => hex) to an
- * autoincremented value.
+/* Maps a uint64_t visitor fingerprint (hashed IP and user agent; the date is
+ * implied by the per-date partitioning) to an autoincremented value whose top
+ * bit records whether the visitor was counted (VISITOR_COUNTED_BIT).
  *
- * 192.168.0.1|27/Apr/2020|7E8E0E -> 1
- * 192.168.0.1|28/Apr/2020|7E8E0E -> 2
+ * 4123991812851215 -> 1
+ * 9812851215412399 -> 2
  */
-/*khash_t(si32) MTRC_UNIQUE_KEYS */
+/*khash_t(u6432) MTRC_UNIQUE_KEYS */
 
 /* Maps string keys made out of the user agent to an autoincremented value.
  *
@@ -132,70 +137,23 @@ struct GKHashStorage_ {
  */
 /*khash_t(is32) MTRC_DATAMAP */
 
-/* Maps the unique uint32_t key of the IP/date/UA and the uint32_t key from the
- * data field encoded into a uint64_t key to numeric autoincremented values.
- * e.g., "1&4" => 12938238293 to ai.
+/* Set of uint64_t keys made out of the uint32_t data key and the uint32_t
+ * unique visitor key. Used to determine whether a visitor was already
+ * counted for a data key.
  *
- * 201023232 -> 1
- * 202939232 -> 2
+ * 201023232
+ * 202939232
  */
-/*khash_t(si32) MTRC_UNIQMAP */
+/*khash_t(u648) MTRC_UNIQMAP */
 
-/* Maps integer keys made from a data key to an integer root key in
- * MTRC_KEYMAP.
+/* Maps integer keys from the keymap hash to all of its numeric metrics
+ * packed into a single GKMetricVals value (hits, visitors, bandwidth,
+ * cumulative/max time served, method, protocol and root key).
  *
- * 4 -> 6
- * 3 -> 8
+ * 1 -> {hits: 10934, visitors: 100, bw: 1024, ...}
+ * 2 -> {hits: 3231, visitors: 56, bw: 2048, ...}
  */
-/*khash_t(ii32) MTRC_ROOT */
-
-/* Maps integer key from the keymap hash to the number of
- * hits.
- *
- * 1 -> 10934
- * 2 -> 3231
- * 3 -> 500
- * 4 -> 201
- * 5 -> 206
- */
-/*khash_t(ii32) MTRC_HITS */
-
-/* Maps numeric keys made from the uniqmap store to autoincremented values
- * (counter).
- * 10 -> 100
- * 40 -> 56
- */
-/*khash_t(ii32) MTRC_VISITORS */
-
-/* Maps numeric data keys to bandwidth (in bytes).
- * 1 -> 1024
- * 2 -> 2048
- */
-/*khash_t(iu64) MTRC_BW */
-
-/* Maps numeric data keys to cumulative time served (in usecs/msecs).
- * 1 -> 187
- * 2 -> 208
- */
-/*khash_t(iu64) MTRC_CUMTS */
-
-/* Maps numeric data keys to max time served (in usecs/msecs).
- * 1 -> 1287
- * 2 -> 2308
- */
-/*khash_t(iu64) MTRC_MAXTS */
-
-/* Maps numeric data keys to uint8_t values.
- * 1 -> 3
- * 2 -> 4
- */
-/*khash_t(is32) MTRC_METHODS */
-
-/* Maps numeric data keys to uint8_t values.
- * 1 -> 1
- * 2 -> 1
- */
-/*khash_t(is32) MTRC_PROTOCOLS */
+/*khash_t(imtv) MTRC_METRICS */
 
 /* Maps numeric unique data keys (e.g., 192.168.0.1 => 1) to the unique user
  * agent key. Therefore, 1 IP can contain multiple user agents
@@ -222,10 +180,9 @@ char *ht_get_method (GModule module, uint32_t key);
 char *ht_get_protocol (GModule module, uint32_t key);
 char *ht_get_root (GModule module, uint32_t key);
 uint32_t ht_get_hits (GModule module, int key);
-uint32_t ht_get_keymap (GModule module, const char *key);
 uint32_t ht_get_size_datamap (GModule module);
 uint32_t ht_get_size_dates (void);
-uint32_t ht_get_size_uniqmap (GModule module);
+uint32_t ht_sum_uniq_visitors (void);
 uint32_t ht_get_visitors (GModule module, uint32_t key);
 uint32_t ht_sum_valid (void);
 uint64_t ht_get_bw (GModule module, uint32_t key);
@@ -257,14 +214,15 @@ uint32_t ht_inc_cnt_valid (uint32_t date, uint32_t inc);
 uint32_t ht_insert_agent_key (uint32_t date, uint32_t key);
 uint32_t ht_insert_hits (GModule module, uint32_t date, uint32_t key, uint32_t inc, uint32_t ckey);
 uint32_t ht_insert_keymap (GModule module, uint32_t date, uint32_t key, uint32_t * ckey);
-uint32_t ht_insert_unique_key (uint32_t date, const char *key);
+uint32_t ht_insert_unique_key (uint32_t date, uint64_t key, int countable, int *first_count);
+void ht_inc_cnt_visitors (uint32_t date);
 uint32_t ht_insert_visitor (GModule module, uint32_t date, uint32_t key, uint32_t inc, uint32_t ckey);
 int ht_insert_meta_data (GModule module, uint32_t date, const char *key, uint64_t value);
 
 int invalidate_date (int date);
 int rebuild_rawdata_cache (void);
 void des_igkh (void *h);
-void free_cache (GKHashModule * cache);
+void free_cache (GKCacheModule * cache);
 void init_storage (void);
 
 GRawData *parse_raw_data (GModule module);

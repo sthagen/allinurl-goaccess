@@ -1337,6 +1337,7 @@ GoAccess.Panels = {
 		if (GoAccess.Util.isPanelValid(panel) || GoAccess.Util.isPanelHidden(panel))
 			return false;
 
+		clearMapFullscreen(d3.select('#chart-' + panel));
 		var col = ele.parentNode;
 		col.removeChild(ele);
 		// Render panel given a user interface definition
@@ -1350,6 +1351,7 @@ GoAccess.Panels = {
 		var ui = GoAccess.getPanelUI(), idx = 0, row = null, col = null;
 		var order = GoAccess.AppPrefs.panelOrder || [];
 
+		clearMapFullscreen(d3.select('.' + MAP_FULLSCREEN_CLASS));
 		$('#panels').innerHTML = '';
 
 		// If no order is set, create default order
@@ -1637,14 +1639,18 @@ GoAccess.Charts = {
 	},
 
 	renderChart: function (panel, chart, data) {
+		var selection = d3.select('#chart-' + panel);
+
+		if (!chart.isWorldMap)
+			clearMapFullscreen(selection);
 		// remove popup
-		d3.select('#chart-' + panel + '>.chart-tooltip-wrap')
+		selection.select('.chart-tooltip-wrap')
 			.remove();
 		// remove svg
-		d3.select('#chart-' + panel).selectAll('svg')
+		selection.selectAll('svg')
 			.remove();
 		// add chart to the document
-		d3.select("#chart-" + panel)
+		selection
 			.datum(data)
 			.call(chart)
 			.append("div").attr("class", "chart-tooltip-wrap");

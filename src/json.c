@@ -485,7 +485,7 @@ poverall_processed_time (GJSON *json, int sp) {
  * overall object. */
 static void
 poverall_visitors (GJSON *json, int sp) {
-  pskeyu64val (json, OVERALL_VISITORS, ht_get_size_uniqmap (VISITORS), sp, 0);
+  pskeyu64val (json, OVERALL_VISITORS, ht_sum_uniq_visitors (), sp, 0);
 }
 
 /* Write to a buffer the total number of unique files under the

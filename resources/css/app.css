@@ -697,6 +697,47 @@ ol[role="list"] {
 	position: relative;
 }
 
+body.map-fullscreen-open {
+	overflow: hidden;
+}
+
+.map-fullscreen-toggle {
+	position: absolute;
+	right: 8px;
+	top: 8px;
+	z-index: 20;
+}
+
+.chart-wrap.map-fullscreen {
+	background: linear-gradient(to bottom, #fdfdfd 0%, #e9e9e9 100%);
+	box-sizing: border-box;
+	height: 100vh;
+	inset: 0;
+	margin: 0;
+	overflow: hidden;
+	padding: 16px;
+	position: fixed;
+	width: 100vw;
+	z-index: 1100;
+}
+
+.chart-wrap.map-fullscreen .map-fullscreen-toggle {
+	right: 16px;
+	top: 16px;
+}
+
+.dark.blue .chart-wrap.map-fullscreen {
+	background: linear-gradient(to bottom, #1e2b43 0%, #0f172a 100%);
+}
+
+.dark.gray .chart-wrap.map-fullscreen {
+	background: linear-gradient(to bottom, #2a2a2a 0%, #141414 100%);
+}
+
+.dark.purple .chart-wrap.map-fullscreen {
+	background: linear-gradient(to bottom, #2a2240 0%, #151523 100%);
+}
+
 svg {
 	background-color: transparent;
 	display: block;

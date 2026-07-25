@@ -2076,7 +2076,7 @@ ws_get_frm_header (WSClient *client) {
   ws_set_payloadlen ((*frm), (*frm)->buf);
   ws_set_masking_key ((*frm), (*frm)->buf);
 
-  if ((*frm)->payloadlen > wsconfig.max_frm_size) {
+  if ((*frm)->payloadlen > (uint64_t) wsconfig.max_frm_size) {
     ws_error (client, WS_CLOSE_TOO_LARGE, "Frame is too big");
     return ws_set_status (client, WS_ERR | WS_CLOSE, bytes);
   }
@@ -2098,6 +2098,9 @@ ws_realloc_frm_payload (WSFrame *frm, WSMessage *msg) {
   uint64_t newlen = 0;
 
   newlen = msg->payloadsz + frm->payloadlen;
+  if (newlen > (uint64_t) wsconfig.max_frm_size)
+    return 1;
+
   tmp = realloc (msg->payload, newlen);
   if (tmp == NULL && newlen > 0) {
     free (msg->payload);

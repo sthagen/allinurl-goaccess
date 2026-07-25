@@ -320,7 +320,8 @@ parse_ios (char *agent, int tlen) {
     goto out;
 
   *q = 0;
-  memmove (agent + tlen, agent + offset, offset);
+  /* Move the version suffix to sit immediately after the matched keyword. */
+  memmove (agent + tlen, p, (size_t) (q - p) + 1);
   return char_replace (agent, '_', '.');
 
 out:

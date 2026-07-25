@@ -92,7 +92,7 @@ static const char *const browsers[][2] = {
   {"BrowserX", "Others"},
   {"Dalvik", "Others"},
   {"Dillo", "Others"},
-  {"ELinks", "Others"},
+  {"ELinks", "Text-based"},
   {"Epiphany", "Others"},
   {"Firebird", "Others"},
   {"Galeon", "Others"},
@@ -100,8 +100,9 @@ static const char *const browsers[][2] = {
   {"IBrowse", "Others"},
   {"K-Meleon", "Others"},
   {"Konqueror", "Others"},
-  {"Links", "Others"},
-  {"Lynx", "Others"},
+  {"Links", "Text-based"},
+  {"Lynx", "Text-based"},
+  {"chawan", "Text-based"},
   {"Midori", "Others"},
   {"Minefield", "Others"},
   {"Mosaic", "Others"},
@@ -114,7 +115,7 @@ static const char *const browsers[][2] = {
   {"Go-http-client", "Others"},
   {"curl", "Others"},
   {"midori", "Others"},
-  {"w3m", "Others"},
+  {"w3m", "Text-based"},
   {"MicroMessenger", "Others"},
   {"Apache", "Others"},
   {"JOSM", "Others"},
@@ -546,7 +547,7 @@ parse_crawler (char *str, char *match, char *type) {
  * If no occurrences are found, NULL is returned.
  * If an occurrence is found, a pointer to the match is returned . */
 static char *
-check_http_crawler (const char *str) {
+check_http_crawler (char *str) {
   char *match = NULL;
 
   /* e.g., compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm */
